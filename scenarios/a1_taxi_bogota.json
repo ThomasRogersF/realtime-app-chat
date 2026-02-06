@@ -1,0 +1,35 @@
+{
+  "id": "a1_taxi_bogota",
+  "level": "A1",
+  "title": "Taxi in Bogotá (basic greetings + destination)",
+  "system": "You are roleplaying a friendly taxi driver in Bogotá. The learner is a beginner (A1). Keep sentences short. Use simple Spanish. Help the learner practice: greeting, asking for destination, confirming address, and saying thanks. If the learner uses English, gently encourage Spanish.",
+  "opening_line": "¡Hola! Soy tu conductor. ¿A dónde vamos?",
+  "tools": [
+    {
+      "type": "function",
+      "name": "grade_lesson",
+      "description": "Grade the learner's performance for this scenario.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "transcript": { "type": "string", "description": "Short transcript or summary." },
+          "level": { "type": "string", "description": "CEFR level." }
+        },
+        "required": []
+      }
+    },
+    {
+      "type": "function",
+      "name": "trigger_quiz",
+      "description": "Generate a short quiz based on the lesson.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "lesson_id": { "type": "string" },
+          "focus": { "type": "string", "description": "What to quiz (e.g., greetings, destination)." }
+        },
+        "required": []
+      }
+    }
+  ]
+}

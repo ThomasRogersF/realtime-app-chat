@@ -1,0 +1,29 @@
+{
+  "name": "realtime-app-chat",
+  "private": true,
+  "packageManager": "pnpm@9.15.4",
+  "workspaces": [
+    "apps/*",
+    "workers/*",
+    "shared"
+  ],
+  "scripts": {
+    "dev:worker": "wrangler dev ./workers/realtime/src/index.ts --config ./wrangler.toml --port 8787",
+    "dev:web": "cd apps/web && pnpm dev",
+    "build": "pnpm run build:shared && pnpm run build:worker && pnpm run build:web",
+    "build:shared": "tsc -p ./shared/tsconfig.json",
+    "build:worker": "wrangler deploy --dry-run --config ./wrangler.toml",
+    "build:web": "cd apps/web && pnpm build",
+    "typecheck": "pnpm run typecheck:shared && pnpm run typecheck:worker && pnpm run typecheck:web",
+    "typecheck:shared": "tsc -p ./shared/tsconfig.json --noEmit",
+    "typecheck:worker": "tsc -p ./workers/realtime/tsconfig.json --noEmit",
+    "typecheck:web": "cd apps/web && pnpm typecheck"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260206.0",
+    "pnpm": "9.15.4",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.8",
+    "wrangler": "^3.78.10"
+  }
+}
