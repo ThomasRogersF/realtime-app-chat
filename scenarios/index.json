@@ -1,9 +1,0 @@
-{
-  "scenarios": [
-    {
-      "id": "a1_taxi_bogota",
-      "level": "A1",
-      "title": "Taxi in Bogotá (basic greetings + destination)"
-    }
-  ]
-}
