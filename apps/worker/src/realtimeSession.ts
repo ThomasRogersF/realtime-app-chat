@@ -13,6 +13,7 @@ const registry = new LocalScenarioRegistry();
  * Durable Object that manages a single realtime session.
  * Phase 3: Opens a second WebSocket to OpenAI Realtime API and relays TEXT events.
  * Phase 4: Forwards PCM16 audio from client mic to OpenAI input_audio_buffer.
+ * Phase 5: Enables audio output and relays AI audio deltas to client for playback.
  */
 export class RealtimeSession implements DurableObject {
   private state: DurableObjectState;
@@ -236,13 +237,16 @@ export class RealtimeSession implements DurableObject {
       });
 
       // Send session.update to configure the session
-      // Phase 4: accept PCM16 audio input; keep modalities:["text"] (no audio output yet)
+      // Phase 5: enable both text and audio output; PCM16 in/out
+      const voice = scenario?.session_overrides?.voice ?? "alloy";
       const sessionUpdate: Record<string, unknown> = {
         type: "session.update",
         session: {
           instructions: scenario?.system_prompt ?? "You are a helpful assistant.",
-          modalities: ["text"],
+          modalities: ["text", "audio"],
+          voice,
           input_audio_format: "pcm16",
+          output_audio_format: "pcm16",
           input_audio_transcription: { model: "whisper-1" },
           tools: scenario?.tools ?? [],
           tool_choice: "auto",
@@ -348,6 +352,25 @@ export class RealtimeSession implements DurableObject {
             type: "server.error",
             error: `OpenAI: ${errorMessage}`,
           });
+        }
+        break;
+      }
+
+      // ── Phase 5: Audio output streaming ─────────────────────
+      case "response.audio.delta": {
+        const delta = typeof msg.delta === "string" ? msg.delta : "";
+        if (this.clientWs && delta) {
+          this.sendJson(this.clientWs, {
+            type: "server.audio.delta",
+            delta,
+          });
+        }
+        break;
+      }
+
+      case "response.audio.done": {
+        if (this.clientWs) {
+          this.sendJson(this.clientWs, { type: "server.audio.done" });
         }
         break;
       }
