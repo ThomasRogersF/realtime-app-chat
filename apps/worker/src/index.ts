@@ -30,6 +30,32 @@ export default {
       return stub.fetch(request);
     }
 
+    // ── Phase 8: Session summary endpoint ────────────────────
+    const summaryMatch = url.pathname.match(
+      /^\/session\/([^/]+)\/summary$/,
+    );
+    if (summaryMatch && request.method === "GET") {
+      const sessionKey = summaryMatch[1];
+      const id = env.REALTIME_SESSION.idFromName(sessionKey);
+      const stub = env.REALTIME_SESSION.get(id);
+      // Delegate to DO's /internal/summary handler
+      const internalUrl = new URL(request.url);
+      internalUrl.pathname = "/internal/summary";
+      return stub.fetch(new Request(internalUrl.toString()));
+    }
+
+    // ── CORS preflight for summary endpoint ──────────────────
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type",
+        },
+      });
+    }
+
     return new Response("Not found", { status: 404 });
   },
 } satisfies ExportedHandler<Env>;
