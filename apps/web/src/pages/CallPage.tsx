@@ -28,6 +28,10 @@ export function CallPage() {
   const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
   const [textInput, setTextInput] = useState("");
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
+  /** Phase 7: Recent tool results for debug display */
+  const [toolResults, setToolResults] = useState<
+    Array<{ name: string; result: unknown; ts: number }>
+  >([]);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<Pcm16Player | null>(null);
   const aiSpeakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -166,6 +170,15 @@ export function CallPage() {
         // No action needed — transcription.completed will add the user bubble
         break;
       }
+
+      // ── Phase 7: Tool results (debug only) ───────────────────
+      case "server.tool_result": {
+        const name = typeof evt.name === "string" ? evt.name : "unknown";
+        setToolResults((prev) =>
+          [...prev, { name, result: evt.result, ts: Date.now() }].slice(-5),
+        );
+        break;
+      }
     }
   }, [sendResponseCancel]);
 
@@ -183,6 +196,7 @@ export function CallPage() {
   useEffect(() => {
     if (status === "connecting") {
       setTranscript([]);
+      setToolResults([]);
       lastProcessedRef.current = 0;
     }
   }, [status]);
@@ -493,6 +507,23 @@ export function CallPage() {
                 .map((e) => JSON.stringify(e, null, 2))
                 .join("\n---\n") || "(no events)"}
             </pre>
+
+            {/* Phase 7: Tool results debug display */}
+            {toolResults.length > 0 && (
+              <div className="mt-2">
+                <span className="text-xs font-medium text-amber-500">
+                  Tool Results ({toolResults.length})
+                </span>
+                <pre className="mt-1 max-h-40 overflow-y-auto rounded bg-amber-950/30 p-2 text-[10px] leading-tight text-amber-300/80">
+                  {toolResults
+                    .map(
+                      (tr) =>
+                        `[${new Date(tr.ts).toLocaleTimeString()}] ${tr.name}\n${JSON.stringify(tr.result, null, 2)}`,
+                    )
+                    .join("\n---\n")}
+                </pre>
+              </div>
+            )}
           </div>
         </div>
       )}

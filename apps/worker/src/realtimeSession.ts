@@ -1,6 +1,7 @@
 import type { Env } from "./index";
 import { LocalScenarioRegistry } from "@shared";
 import type { Scenario } from "@shared";
+import { runTool } from "./tools/toolRunner";
 
 interface SessionState {
   sessionId: string;
@@ -26,6 +27,8 @@ export class RealtimeSession implements DurableObject {
   private openaiWs: WebSocket | null = null;
   /** Accumulates response.text.delta content for the current response */
   private pendingResponseText = "";
+  /** Phase 7: Tracks call_ids already dispatched to avoid duplicate execution */
+  private pendingToolCalls = new Set<string>();
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -424,6 +427,38 @@ export class RealtimeSession implements DurableObject {
         break;
       }
 
+      // ── Phase 7: Tool call detection ────────────────────────
+      // Primary path: OpenAI Realtime API emits this when function call
+      // arguments are fully streamed.
+      case "response.function_call_arguments.done": {
+        const callId = typeof msg.call_id === "string" ? msg.call_id : undefined;
+        const toolName = typeof msg.name === "string" ? msg.name : "";
+        const rawArgs = typeof msg.arguments === "string" ? msg.arguments : "{}";
+        if (toolName) {
+          this.handleToolCall(toolName, rawArgs, callId);
+        }
+        break;
+      }
+
+      // Secondary / defensive path: response.output_item.done may contain
+      // a complete function_call item. We only act if we can extract what
+      // we need and the primary path hasn't already handled it (keyed on
+      // call_id via the pendingToolCalls set).
+      case "response.output_item.done": {
+        const item = msg.item as Record<string, unknown> | undefined;
+        if (item && item.type === "function_call") {
+          const callId = typeof item.call_id === "string" ? item.call_id : undefined;
+          // Skip if we already handled this via the primary path
+          if (callId && this.pendingToolCalls.has(callId)) break;
+          const toolName = typeof item.name === "string" ? item.name : "";
+          const rawArgs = typeof item.arguments === "string" ? item.arguments : "{}";
+          if (toolName) {
+            this.handleToolCall(toolName, rawArgs, callId);
+          }
+        }
+        break;
+      }
+
       // ── Session events (informational) ────────────────────────
       case "session.created":
       case "session.updated":
@@ -468,6 +503,64 @@ export class RealtimeSession implements DurableObject {
     );
   }
 
+  // ── Phase 7: Tool call execution ────────────────────────────────
+  private async handleToolCall(
+    name: string,
+    rawArgs: string,
+    callId?: string,
+  ): Promise<void> {
+    // De-duplicate: mark this call_id as in-flight
+    if (callId) {
+      if (this.pendingToolCalls.has(callId)) return;
+      this.pendingToolCalls.add(callId);
+    }
+
+    // Parse arguments defensively
+    let args: Record<string, unknown>;
+    try {
+      args = JSON.parse(rawArgs);
+    } catch {
+      args = {};
+    }
+
+    // 1) Execute the tool handler
+    const result = await runTool(name, args, {
+      scenarioId: this.session.scenarioId ?? undefined,
+      sessionId: this.session.sessionId,
+    });
+
+    // 2) Send function_call_output back to OpenAI
+    const outputItem: Record<string, unknown> = {
+      type: "function_call_output",
+      output: JSON.stringify(result),
+    };
+    if (callId) {
+      outputItem.call_id = callId;
+    }
+
+    this.forwardToOpenAI({
+      type: "conversation.item.create",
+      item: outputItem,
+    });
+
+    // 3) Always trigger response.create so the model continues speaking
+    this.forwardToOpenAI({ type: "response.create" });
+
+    // 4) Forward tool result to client as a non-audio event
+    if (this.clientWs) {
+      this.sendJson(this.clientWs, {
+        type: "server.tool_result",
+        name,
+        result,
+      });
+    }
+
+    // Clean up tracking set
+    if (callId) {
+      this.pendingToolCalls.delete(callId);
+    }
+  }
+
   // ── Forward arbitrary JSON to OpenAI WS ────────────────────────
   private forwardToOpenAI(data: Record<string, unknown>): void {
     if (!this.openaiWs) {
@@ -496,6 +589,7 @@ export class RealtimeSession implements DurableObject {
     this.session = { sessionId: "", scenarioId: null };
     this.clientWs = null;
     this.pendingResponseText = "";
+    this.pendingToolCalls.clear();
 
     if (this.openaiWs) {
       try {
