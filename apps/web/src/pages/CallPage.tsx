@@ -1,8 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { mockScenarios } from "../data/mockScenarios";
+import type { Scenario } from "@shared";
+import { LocalScenarioRegistry } from "@shared";
 
 type MicState = "idle" | "active" | "processing";
+
+const registry = new LocalScenarioRegistry();
 
 const mockTranscript = [
   { role: "ai" as const, text: "¡Hola! ¿A dónde vamos?" },
@@ -13,13 +16,42 @@ export function CallPage() {
   const { scenarioId } = useParams<{ scenarioId: string }>();
   const navigate = useNavigate();
   const [micState, setMicState] = useState<MicState>("idle");
+  const [scenario, setScenario] = useState<Scenario | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const scenario = mockScenarios.find((s) => s.id === scenarioId);
+  useEffect(() => {
+    if (!scenarioId) {
+      setError("No scenario ID provided");
+      setLoading(false);
+      return;
+    }
 
-  if (!scenario) {
+    registry
+      .getScenarioById(scenarioId)
+      .then(setScenario)
+      .catch(() => setError(`Scenario not found: ${scenarioId}`))
+      .finally(() => setLoading(false));
+  }, [scenarioId]);
+
+  if (loading) {
     return (
       <div className="flex h-screen items-center justify-center">
-        <p className="text-gray-400">Scenario not found.</p>
+        <p className="text-gray-400">Loading scenario…</p>
+      </div>
+    );
+  }
+
+  if (error || !scenario) {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center gap-4">
+        <p className="text-gray-400">{error ?? "Scenario not found."}</p>
+        <button
+          onClick={() => navigate("/")}
+          className="rounded bg-gray-800 px-4 py-2 text-sm transition hover:bg-gray-700"
+        >
+          ← Back to Menu
+        </button>
       </div>
     );
   }
@@ -42,9 +74,16 @@ export function CallPage() {
         >
           ← Exit
         </button>
-        <h1 className="text-sm font-medium text-gray-300">
-          {scenario.title}
-        </h1>
+        <div className="text-center">
+          <h1 className="text-sm font-medium text-gray-300">
+            {scenario.title}
+          </h1>
+          {scenario.character && (
+            <p className="text-xs text-gray-500">
+              {scenario.character.name} — {scenario.character.role}
+            </p>
+          )}
+        </div>
         {/* Progress placeholder */}
         <div className="h-2 w-24 rounded-full bg-gray-800">
           <div className="h-2 w-1/3 rounded-full bg-teal-500" />
