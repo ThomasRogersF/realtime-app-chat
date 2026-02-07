@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import type { Scenario } from "@shared";
 import { LocalScenarioRegistry } from "@shared";
-
-type MicState = "idle" | "active" | "processing";
+import { useRealtimeTransport } from "../hooks/useRealtimeTransport";
 
 const registry = new LocalScenarioRegistry();
 
@@ -15,10 +14,12 @@ const mockTranscript = [
 export function CallPage() {
   const { scenarioId } = useParams<{ scenarioId: string }>();
   const navigate = useNavigate();
-  const [micState, setMicState] = useState<MicState>("idle");
   const [scenario, setScenario] = useState<Scenario | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const { status, events, connect, send, disconnect } =
+    useRealtimeTransport();
 
   useEffect(() => {
     if (!scenarioId) {
@@ -56,20 +57,34 @@ export function CallPage() {
     );
   }
 
-  function cycleMic() {
-    setMicState((prev) => {
-      if (prev === "idle") return "active";
-      if (prev === "active") return "processing";
-      return "idle";
-    });
+  function handleBigButton() {
+    if (!scenarioId) return;
+    if (status === "disconnected") {
+      connect(scenarioId);
+    } else {
+      disconnect();
+    }
   }
+
+  const micLabel =
+    status === "disconnected"
+      ? "Tap to connect"
+      : status === "connecting"
+        ? "Connecting…"
+        : "Connected — tap to disconnect";
+
+  const micIcon =
+    status === "disconnected" ? "🎤" : status === "connecting" ? "⏳" : "⏸";
 
   return (
     <div className="flex h-screen flex-col">
       {/* Header */}
       <header className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
         <button
-          onClick={() => navigate("/")}
+          onClick={() => {
+            disconnect();
+            navigate("/");
+          }}
           className="rounded bg-gray-800 px-3 py-1 text-sm transition hover:bg-gray-700"
         >
           ← Exit
@@ -115,42 +130,69 @@ export function CallPage() {
       {/* Control Deck */}
       <footer className="border-t border-gray-800 px-4 py-6">
         <div className="flex flex-col items-center gap-3">
-          {/* Speaking indicator placeholder */}
+          {/* Status indicator */}
           <div
             className={`h-3 w-3 rounded-full transition-all ${
-              micState === "active"
+              status === "connected"
                 ? "animate-pulse bg-teal-400 shadow-[0_0_12px_rgba(45,212,191,0.6)]"
-                : micState === "processing"
+                : status === "connecting"
                   ? "animate-pulse bg-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.6)]"
                   : "bg-gray-600"
             }`}
           />
 
-          {/* Mic button */}
+          {/* Big button */}
           <button
-            onClick={cycleMic}
+            onClick={handleBigButton}
             className={`flex h-24 w-24 items-center justify-center rounded-full border-4 transition-all ${
-              micState === "active"
+              status === "connected"
                 ? "border-teal-400 bg-teal-500/20 shadow-[0_0_24px_rgba(45,212,191,0.4)]"
-                : micState === "processing"
+                : status === "connecting"
                   ? "border-amber-400 bg-amber-500/20 shadow-[0_0_24px_rgba(251,191,36,0.4)]"
                   : "border-gray-600 bg-gray-800 hover:border-gray-500"
             }`}
           >
-            <span className="text-2xl">
-              {micState === "idle" && "🎤"}
-              {micState === "active" && "⏸"}
-              {micState === "processing" && "⏳"}
-            </span>
+            <span className="text-2xl">{micIcon}</span>
           </button>
 
-          <span className="text-xs text-gray-500">
-            {micState === "idle" && "Tap to speak"}
-            {micState === "active" && "Listening…"}
-            {micState === "processing" && "Processing…"}
-          </span>
+          <span className="text-xs text-gray-500">{micLabel}</span>
         </div>
       </footer>
+
+      {/* Dev debug panel */}
+      {import.meta.env.DEV && (
+        <div className="border-t border-gray-800 bg-gray-950 px-4 py-3">
+          <div className="mx-auto max-w-lg">
+            <div className="mb-2 flex items-center gap-3">
+              <span className="text-xs font-medium text-gray-500">
+                WS: {status}
+              </span>
+              <button
+                onClick={() => send({ type: "client.ping" })}
+                disabled={status !== "connected"}
+                className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-400 transition hover:bg-gray-700 disabled:opacity-40"
+              >
+                Ping
+              </button>
+              <button
+                onClick={() =>
+                  send({ type: "client.event", payload: { test: true } })
+                }
+                disabled={status !== "connected"}
+                className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-400 transition hover:bg-gray-700 disabled:opacity-40"
+              >
+                Echo test
+              </button>
+            </div>
+            <pre className="max-h-48 overflow-y-auto rounded bg-gray-900 p-2 text-[10px] leading-tight text-gray-400">
+              {events
+                .slice(-10)
+                .map((e, i) => JSON.stringify(e, null, 2))
+                .join("\n---\n") || "(no events)"}
+            </pre>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
