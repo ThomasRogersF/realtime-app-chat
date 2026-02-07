@@ -7,6 +7,7 @@ import {
   type RealtimeEvent,
 } from "../hooks/useRealtimeTransport";
 import { useMicPcmStream } from "../audio/useMicPcmStream";
+import { Pcm16Player } from "../audio/pcm16Player";
 
 const registry = new LocalScenarioRegistry();
 
@@ -26,7 +27,10 @@ export function CallPage() {
 
   const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
   const [textInput, setTextInput] = useState("");
+  const [isAiSpeaking, setIsAiSpeaking] = useState(false);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const playerRef = useRef<Pcm16Player | null>(null);
+  const aiSpeakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const {
     status,
@@ -106,6 +110,30 @@ export function CallPage() {
         }
         break;
       }
+
+      // Phase 5: AI audio playback
+      case "server.audio.delta": {
+        const delta = typeof evt.delta === "string" ? evt.delta : "";
+        if (delta && playerRef.current) {
+          playerRef.current.playBase64Pcm16Delta(delta);
+          setIsAiSpeaking(true);
+          // Clear any pending "done" timer since we got a new delta
+          if (aiSpeakingTimerRef.current) {
+            clearTimeout(aiSpeakingTimerRef.current);
+            aiSpeakingTimerRef.current = null;
+          }
+        }
+        break;
+      }
+
+      case "server.audio.done": {
+        // Brief delay before clearing the glow so the last chunk finishes playing
+        aiSpeakingTimerRef.current = setTimeout(() => {
+          setIsAiSpeaking(false);
+          aiSpeakingTimerRef.current = null;
+        }, 500);
+        break;
+      }
     }
   }, []);
 
@@ -133,6 +161,24 @@ export function CallPage() {
       mic.stop();
     }
   }, [status, mic.isCapturing, mic.stop]);
+
+  // Phase 5: Create/dispose PCM16 player based on connection status
+  useEffect(() => {
+    if (status === "connected") {
+      playerRef.current = new Pcm16Player();
+    }
+    return () => {
+      if (playerRef.current) {
+        playerRef.current.close();
+        playerRef.current = null;
+      }
+      setIsAiSpeaking(false);
+      if (aiSpeakingTimerRef.current) {
+        clearTimeout(aiSpeakingTimerRef.current);
+        aiSpeakingTimerRef.current = null;
+      }
+    };
+  }, [status]);
 
   function handleSendText() {
     const text = textInput.trim();
@@ -317,17 +363,25 @@ export function CallPage() {
       <footer className="border-t border-gray-800 px-4 py-6">
         <div className="flex flex-col items-center gap-3">
           {/* Status indicator */}
-          <div
-            className={`h-3 w-3 rounded-full transition-all ${
-              isRecording
-                ? "animate-pulse bg-red-400 shadow-[0_0_12px_rgba(248,113,113,0.6)]"
-                : status === "connected"
-                  ? "animate-pulse bg-teal-400 shadow-[0_0_12px_rgba(45,212,191,0.6)]"
-                  : status === "connecting"
-                    ? "animate-pulse bg-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.6)]"
-                    : "bg-gray-600"
-            }`}
-          />
+          <div className="flex items-center gap-2">
+            <div
+              className={`h-3 w-3 rounded-full transition-all ${
+                isRecording
+                  ? "animate-pulse bg-red-400 shadow-[0_0_12px_rgba(248,113,113,0.6)]"
+                  : status === "connected"
+                    ? "animate-pulse bg-teal-400 shadow-[0_0_12px_rgba(45,212,191,0.6)]"
+                    : status === "connecting"
+                      ? "animate-pulse bg-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.6)]"
+                      : "bg-gray-600"
+              }`}
+            />
+            {/* AI speaking glow indicator */}
+            {isAiSpeaking && (
+              <span className="animate-pulse text-xs font-medium text-teal-400">
+                AI speaking
+              </span>
+            )}
+          </div>
 
           {/* Big button — PTT when connected, connect/disconnect otherwise */}
           <button
@@ -339,11 +393,13 @@ export function CallPage() {
             className={`flex h-24 w-24 select-none items-center justify-center rounded-full border-4 transition-all ${
               isRecording
                 ? "border-red-400 bg-red-500/20 shadow-[0_0_24px_rgba(248,113,113,0.4)] scale-110"
-                : status === "connected"
-                  ? "border-teal-400 bg-teal-500/20 shadow-[0_0_24px_rgba(45,212,191,0.4)]"
-                  : status === "connecting"
-                    ? "border-amber-400 bg-amber-500/20 shadow-[0_0_24px_rgba(251,191,36,0.4)]"
-                    : "border-gray-600 bg-gray-800 hover:border-gray-500"
+                : isAiSpeaking
+                  ? "animate-pulse border-teal-300 bg-teal-500/30 shadow-[0_0_32px_rgba(45,212,191,0.6)]"
+                  : status === "connected"
+                    ? "border-teal-400 bg-teal-500/20 shadow-[0_0_24px_rgba(45,212,191,0.4)]"
+                    : status === "connecting"
+                      ? "border-amber-400 bg-amber-500/20 shadow-[0_0_24px_rgba(251,191,36,0.4)]"
+                      : "border-gray-600 bg-gray-800 hover:border-gray-500"
             }`}
           >
             <span className="text-2xl">{micIcon}</span>
