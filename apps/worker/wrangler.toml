@@ -1,0 +1,24 @@
+name = "realtime-tutor-worker"
+main = "src/index.ts"
+compatibility_date = "2026-02-01"
+
+# ── Durable Objects ──────────────────────────────────────────
+[durable_objects]
+bindings = [
+  { name = "REALTIME_SESSION", class_name = "RealtimeSession" },
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RealtimeSession"]
+
+# ── Environment variables ────────────────────────────────────
+# ALLOW_ANY_ORIGIN  – "true" to skip origin checks (default in dev)
+# ALLOWED_ORIGINS   – comma-separated list of allowed origins
+#                     e.g. "https://example.com,https://app.example.com"
+#
+# Set via `wrangler secret put` for production, or in .dev.vars for local dev.
+
+[vars]
+ALLOW_ANY_ORIGIN = "true"
+ALLOWED_ORIGINS = ""
