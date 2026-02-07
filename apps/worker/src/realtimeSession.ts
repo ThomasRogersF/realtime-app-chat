@@ -155,6 +155,12 @@ export class RealtimeSession implements DurableObject {
         break;
       }
 
+      // ── Phase 6: Barge-in — cancel in-flight response ─────
+      case "client.response.cancel": {
+        this.forwardToOpenAI({ type: "response.cancel" });
+        break;
+      }
+
       default:
         this.sendJson(ws, {
           type: "server.error",
@@ -394,6 +400,25 @@ export class RealtimeSession implements DurableObject {
           this.sendJson(this.clientWs, {
             type: "server.error",
             error: "Audio transcription failed",
+          });
+        }
+        break;
+      }
+
+      // ── Phase 6: Voice activity detection (barge-in) ────────
+      case "input_audio_buffer.speech_started": {
+        if (this.clientWs) {
+          this.sendJson(this.clientWs, {
+            type: "server.user_speech_started",
+          });
+        }
+        break;
+      }
+
+      case "input_audio_buffer.speech_stopped": {
+        if (this.clientWs) {
+          this.sendJson(this.clientWs, {
+            type: "server.user_speech_stopped",
           });
         }
         break;

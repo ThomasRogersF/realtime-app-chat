@@ -31,6 +31,8 @@ export function CallPage() {
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<Pcm16Player | null>(null);
   const aiSpeakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Phase 6: Timestamp until which late audio deltas are dropped after barge-in */
+  const ignoreAudioUntilRef = useRef(0);
 
   const {
     status,
@@ -40,6 +42,7 @@ export function CallPage() {
     sendAudioAppend,
     sendAudioCommit,
     sendResponseCreate,
+    sendResponseCancel,
     disconnect,
   } = useRealtimeTransport();
 
@@ -113,6 +116,10 @@ export function CallPage() {
 
       // Phase 5: AI audio playback
       case "server.audio.delta": {
+        // Phase 6: Drop late audio deltas that arrive after barge-in
+        if (Date.now() < ignoreAudioUntilRef.current) {
+          break;
+        }
         const delta = typeof evt.delta === "string" ? evt.delta : "";
         if (delta && playerRef.current) {
           playerRef.current.playBase64Pcm16Delta(delta);
@@ -134,8 +141,33 @@ export function CallPage() {
         }, 500);
         break;
       }
+
+      // ── Phase 6: Barge-in — user started speaking ──────────
+      case "server.user_speech_started": {
+        // 1. Hard-stop AI audio playback immediately
+        if (playerRef.current) {
+          playerRef.current.stopHard();
+          playerRef.current.resetQueue();
+        }
+        // 2. Turn off AI speaking indicator
+        setIsAiSpeaking(false);
+        if (aiSpeakingTimerRef.current) {
+          clearTimeout(aiSpeakingTimerRef.current);
+          aiSpeakingTimerRef.current = null;
+        }
+        // 3. Cancel in-flight response on server
+        sendResponseCancel();
+        // 4. Ignore any straggler audio deltas for 200ms
+        ignoreAudioUntilRef.current = Date.now() + 200;
+        break;
+      }
+
+      case "server.user_speech_stopped": {
+        // No action needed — transcription.completed will add the user bubble
+        break;
+      }
     }
-  }, []);
+  }, [sendResponseCancel]);
 
   // Watch events array for new server events
   const lastProcessedRef = useRef(0);

@@ -106,6 +106,15 @@ export function useRealtimeTransport() {
     appendEvent(msg);
   }, [appendEvent]);
 
+  /** Phase 6: Cancel an in-flight response (barge-in) */
+  const sendResponseCancel = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const msg = { type: "client.response.cancel" };
+    ws.send(JSON.stringify(msg));
+    appendEvent(msg);
+  }, [appendEvent]);
+
   const disconnect = useCallback(() => {
     const ws = wsRef.current;
     if (ws) {
@@ -123,6 +132,7 @@ export function useRealtimeTransport() {
     sendAudioAppend,
     sendAudioCommit,
     sendResponseCreate,
+    sendResponseCancel,
     disconnect,
   } as const;
 }
