@@ -7,6 +7,7 @@ A data-driven Realtime AI Tutor app built with a pnpm workspaces monorepo.
 ```
 /
   apps/web        — Vite + React + TypeScript + Tailwind frontend
+  apps/worker     — Cloudflare Worker + Durable Object (OpenAI Realtime relay)
   packages/shared — Shared TypeScript types and helpers
 ```
 
@@ -16,15 +17,23 @@ A data-driven Realtime AI Tutor app built with a pnpm workspaces monorepo.
 # Install dependencies
 pnpm install
 
-# Start the web app in dev mode
+# Set the OpenAI API key (required for the worker)
+cd apps/worker && npx wrangler secret put OPENAI_API_KEY
+
+# Start the worker in dev mode
+pnpm dev:worker
+
+# Start the web app in dev mode (in a separate terminal)
 pnpm dev:web
 
 # Typecheck all packages
 pnpm typecheck
 ```
 
-## Phase 0 — Repo Foundations
+## Environment Variables (Worker)
 
-This phase sets up the monorepo wiring, shared types, and a scaffold web app
-with menu and call pages using mock scenario data. No backend, no WebSockets,
-no audio, no AI integration yet.
+| Variable | Source | Description |
+|---|---|---|
+| `OPENAI_API_KEY` | `wrangler secret put` | Your OpenAI API key (secret) |
+| `OPENAI_MODEL` | `wrangler.toml` vars | Realtime model ID |
+| `OPENAI_LOG_EVENTS` | `wrangler.toml` vars | Forward raw OpenAI events as `debug.openai` |
