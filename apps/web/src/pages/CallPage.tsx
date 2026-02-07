@@ -6,6 +6,7 @@ import {
   useRealtimeTransport,
   type RealtimeEvent,
 } from "../hooks/useRealtimeTransport";
+import { useMicPcmStream } from "../audio/useMicPcmStream";
 
 const registry = new LocalScenarioRegistry();
 
@@ -27,8 +28,19 @@ export function CallPage() {
   const [textInput, setTextInput] = useState("");
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
-  const { status, events, connect, send, disconnect } =
-    useRealtimeTransport();
+  const {
+    status,
+    events,
+    connect,
+    send,
+    sendAudioAppend,
+    sendAudioCommit,
+    sendResponseCreate,
+    disconnect,
+  } = useRealtimeTransport();
+
+  // ── Mic streaming (Phase 4) ────────────────────────────────
+  const mic = useMicPcmStream(sendAudioAppend);
 
   useEffect(() => {
     if (!scenarioId) {
@@ -85,6 +97,15 @@ export function CallPage() {
         });
         break;
       }
+
+      // Phase 4: Surface completed transcription as a user bubble
+      case "server.transcription.completed": {
+        const text = typeof evt.text === "string" ? evt.text : "";
+        if (text) {
+          setTranscript((prev) => [...prev, { role: "user", text }]);
+        }
+        break;
+      }
     }
   }, []);
 
@@ -106,6 +127,13 @@ export function CallPage() {
     }
   }, [status]);
 
+  // Stop mic if we disconnect
+  useEffect(() => {
+    if (status === "disconnected" && mic.isCapturing) {
+      mic.stop();
+    }
+  }, [status, mic.isCapturing, mic.stop]);
+
   function handleSendText() {
     const text = textInput.trim();
     if (!text || status !== "connected") return;
@@ -121,6 +149,20 @@ export function CallPage() {
       e.preventDefault();
       handleSendText();
     }
+  }
+
+  // ── Push-to-talk handlers ──────────────────────────────────
+  function handlePttDown() {
+    if (status !== "connected") return;
+    mic.start();
+  }
+
+  function handlePttUp() {
+    if (!mic.isCapturing) return;
+    mic.stop();
+    // Commit the audio buffer and request a response
+    sendAudioCommit();
+    sendResponseCreate();
   }
 
   if (loading) {
@@ -145,24 +187,36 @@ export function CallPage() {
     );
   }
 
-  function handleBigButton() {
+  // When disconnected, big button connects. When connected, it's push-to-talk.
+  function handleBigButtonClick() {
     if (!scenarioId) return;
     if (status === "disconnected") {
       connect(scenarioId);
-    } else {
-      disconnect();
+    } else if (status === "connected") {
+      // Click (not hold) while connected → disconnect
+      // Push-to-talk is handled by pointer events below
     }
   }
+
+  const isRecording = mic.isCapturing;
 
   const micLabel =
     status === "disconnected"
       ? "Tap to connect"
       : status === "connecting"
         ? "Connecting..."
-        : "Connected — tap to disconnect";
+        : isRecording
+          ? "Recording..."
+          : "Hold to talk";
 
   const micIcon =
-    status === "disconnected" ? "\uD83C\uDFA4" : status === "connecting" ? "\u23F3" : "\u23F8";
+    status === "disconnected"
+      ? "\uD83C\uDFA4"
+      : status === "connecting"
+        ? "\u23F3"
+        : isRecording
+          ? "\uD83D\uDD34"
+          : "\uD83C\uDFA4";
 
   return (
     <div className="flex h-screen flex-col">
@@ -170,6 +224,7 @@ export function CallPage() {
       <header className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
         <button
           onClick={() => {
+            mic.stop();
             disconnect();
             navigate("/");
           }}
@@ -198,7 +253,7 @@ export function CallPage() {
         <div className="mx-auto max-w-lg space-y-4">
           {transcript.length === 0 && status === "connected" && (
             <p className="text-center text-sm text-gray-500">
-              Send a message to start the conversation.
+              Hold the button and speak, or type a message below.
             </p>
           )}
           {transcript.map((msg, i) => (
@@ -226,7 +281,7 @@ export function CallPage() {
         </div>
       </main>
 
-      {/* Text input (Phase 3 dev text box) */}
+      {/* Text input (Phase 3 dev text box — kept for debugging) */}
       {status === "connected" && (
         <div className="border-t border-gray-800 px-4 py-3">
           <div className="mx-auto flex max-w-lg gap-2">
@@ -249,35 +304,69 @@ export function CallPage() {
         </div>
       )}
 
+      {/* Mic error display */}
+      {mic.error && (
+        <div className="border-t border-red-900/50 bg-red-950/30 px-4 py-2">
+          <p className="text-center text-xs text-red-400">
+            Mic error: {mic.error}
+          </p>
+        </div>
+      )}
+
       {/* Control Deck */}
       <footer className="border-t border-gray-800 px-4 py-6">
         <div className="flex flex-col items-center gap-3">
           {/* Status indicator */}
           <div
             className={`h-3 w-3 rounded-full transition-all ${
-              status === "connected"
-                ? "animate-pulse bg-teal-400 shadow-[0_0_12px_rgba(45,212,191,0.6)]"
-                : status === "connecting"
-                  ? "animate-pulse bg-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.6)]"
-                  : "bg-gray-600"
+              isRecording
+                ? "animate-pulse bg-red-400 shadow-[0_0_12px_rgba(248,113,113,0.6)]"
+                : status === "connected"
+                  ? "animate-pulse bg-teal-400 shadow-[0_0_12px_rgba(45,212,191,0.6)]"
+                  : status === "connecting"
+                    ? "animate-pulse bg-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.6)]"
+                    : "bg-gray-600"
             }`}
           />
 
-          {/* Big button */}
+          {/* Big button — PTT when connected, connect/disconnect otherwise */}
           <button
-            onClick={handleBigButton}
-            className={`flex h-24 w-24 items-center justify-center rounded-full border-4 transition-all ${
-              status === "connected"
-                ? "border-teal-400 bg-teal-500/20 shadow-[0_0_24px_rgba(45,212,191,0.4)]"
-                : status === "connecting"
-                  ? "border-amber-400 bg-amber-500/20 shadow-[0_0_24px_rgba(251,191,36,0.4)]"
-                  : "border-gray-600 bg-gray-800 hover:border-gray-500"
+            onClick={status === "disconnected" ? handleBigButtonClick : undefined}
+            onPointerDown={status === "connected" ? handlePttDown : undefined}
+            onPointerUp={status === "connected" ? handlePttUp : undefined}
+            onPointerCancel={status === "connected" ? handlePttUp : undefined}
+            onContextMenu={(e) => e.preventDefault()}
+            className={`flex h-24 w-24 select-none items-center justify-center rounded-full border-4 transition-all ${
+              isRecording
+                ? "border-red-400 bg-red-500/20 shadow-[0_0_24px_rgba(248,113,113,0.4)] scale-110"
+                : status === "connected"
+                  ? "border-teal-400 bg-teal-500/20 shadow-[0_0_24px_rgba(45,212,191,0.4)]"
+                  : status === "connecting"
+                    ? "border-amber-400 bg-amber-500/20 shadow-[0_0_24px_rgba(251,191,36,0.4)]"
+                    : "border-gray-600 bg-gray-800 hover:border-gray-500"
             }`}
           >
             <span className="text-2xl">{micIcon}</span>
           </button>
 
-          <span className="text-xs text-gray-500">{micLabel}</span>
+          <span
+            className={`text-xs ${isRecording ? "font-medium text-red-400" : "text-gray-500"}`}
+          >
+            {micLabel}
+          </span>
+
+          {/* Disconnect button when connected (since big button is now PTT) */}
+          {status === "connected" && (
+            <button
+              onClick={() => {
+                mic.stop();
+                disconnect();
+              }}
+              className="mt-1 rounded bg-gray-800 px-3 py-1 text-xs text-gray-400 transition hover:bg-gray-700"
+            >
+              Disconnect
+            </button>
+          )}
         </div>
       </footer>
 
@@ -306,6 +395,10 @@ export function CallPage() {
                 Echo test
               </button>
             </div>
+            {/* TODO: Phase 4 — transcription-related debug.openai events are
+                already shown here. If the event shape for
+                conversation.item.input_audio_transcription.completed changes,
+                update the server.transcription.completed handler accordingly. */}
             <pre className="max-h-48 overflow-y-auto rounded bg-gray-900 p-2 text-[10px] leading-tight text-gray-400">
               {events
                 .slice(-10)

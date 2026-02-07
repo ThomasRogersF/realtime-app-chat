@@ -12,6 +12,7 @@ const registry = new LocalScenarioRegistry();
 /**
  * Durable Object that manages a single realtime session.
  * Phase 3: Opens a second WebSocket to OpenAI Realtime API and relays TEXT events.
+ * Phase 4: Forwards PCM16 audio from client mic to OpenAI input_audio_buffer.
  */
 export class RealtimeSession implements DurableObject {
   private state: DurableObjectState;
@@ -127,6 +128,32 @@ export class RealtimeSession implements DurableObject {
         break;
       }
 
+      // ── Phase 4: Audio forwarding ────────────────────────────
+      case "client.audio.append": {
+        if (typeof msg.audio !== "string") {
+          this.sendJson(ws, {
+            type: "server.error",
+            error: "client.audio.append requires a base64 'audio' field",
+          });
+          break;
+        }
+        this.forwardToOpenAI({
+          type: "input_audio_buffer.append",
+          audio: msg.audio,
+        });
+        break;
+      }
+
+      case "client.audio.commit": {
+        this.forwardToOpenAI({ type: "input_audio_buffer.commit" });
+        break;
+      }
+
+      case "client.response.create": {
+        this.forwardToOpenAI({ type: "response.create" });
+        break;
+      }
+
       default:
         this.sendJson(ws, {
           type: "server.error",
@@ -209,11 +236,14 @@ export class RealtimeSession implements DurableObject {
       });
 
       // Send session.update to configure the session
+      // Phase 4: accept PCM16 audio input; keep modalities:["text"] (no audio output yet)
       const sessionUpdate: Record<string, unknown> = {
         type: "session.update",
         session: {
           instructions: scenario?.system_prompt ?? "You are a helpful assistant.",
           modalities: ["text"],
+          input_audio_format: "pcm16",
+          input_audio_transcription: { model: "whisper-1" },
           tools: scenario?.tools ?? [],
           tool_choice: "auto",
           temperature: scenario?.session_overrides?.temperature ?? 0.7,
@@ -322,6 +352,30 @@ export class RealtimeSession implements DurableObject {
         break;
       }
 
+      // ── Phase 4: Transcription events ────────────────────────
+      case "conversation.item.input_audio_transcription.completed": {
+        const transcript =
+          typeof msg.transcript === "string" ? msg.transcript : "";
+        if (this.clientWs && transcript) {
+          this.sendJson(this.clientWs, {
+            type: "server.transcription.completed",
+            role: "user",
+            text: transcript,
+          });
+        }
+        break;
+      }
+
+      case "conversation.item.input_audio_transcription.failed": {
+        if (this.clientWs) {
+          this.sendJson(this.clientWs, {
+            type: "server.error",
+            error: "Audio transcription failed",
+          });
+        }
+        break;
+      }
+
       // ── Session events (informational) ────────────────────────
       case "session.created":
       case "session.updated":
@@ -364,6 +418,29 @@ export class RealtimeSession implements DurableObject {
         type: "response.create",
       }),
     );
+  }
+
+  // ── Forward arbitrary JSON to OpenAI WS ────────────────────────
+  private forwardToOpenAI(data: Record<string, unknown>): void {
+    if (!this.openaiWs) {
+      if (this.clientWs) {
+        this.sendJson(this.clientWs, {
+          type: "server.error",
+          error: "Not connected to OpenAI",
+        });
+      }
+      return;
+    }
+    try {
+      this.openaiWs.send(JSON.stringify(data));
+    } catch {
+      if (this.clientWs) {
+        this.sendJson(this.clientWs, {
+          type: "server.error",
+          error: "Failed to send to OpenAI",
+        });
+      }
+    }
   }
 
   // ── Cleanup ───────────────────────────────────────────────────
