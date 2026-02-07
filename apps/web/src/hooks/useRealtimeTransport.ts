@@ -74,6 +74,38 @@ export function useRealtimeTransport() {
     appendEvent(obj);
   }, [appendEvent]);
 
+  /** Convert PCM16 ArrayBuffer to base64 and send as client.audio.append */
+  const sendAudioAppend = useCallback((buffer: ArrayBuffer) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const b64 = btoa(binary);
+    ws.send(JSON.stringify({ type: "client.audio.append", audio: b64 }));
+    // Don't appendEvent for audio chunks — too noisy for the event log
+  }, []);
+
+  /** Signal end of a speech turn */
+  const sendAudioCommit = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const msg = { type: "client.audio.commit" };
+    ws.send(JSON.stringify(msg));
+    appendEvent(msg);
+  }, [appendEvent]);
+
+  /** Request the model to generate a response */
+  const sendResponseCreate = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const msg = { type: "client.response.create" };
+    ws.send(JSON.stringify(msg));
+    appendEvent(msg);
+  }, [appendEvent]);
+
   const disconnect = useCallback(() => {
     const ws = wsRef.current;
     if (ws) {
@@ -83,5 +115,14 @@ export function useRealtimeTransport() {
     setStatus("disconnected");
   }, []);
 
-  return { status, events, connect, send, disconnect } as const;
+  return {
+    status,
+    events,
+    connect,
+    send,
+    sendAudioAppend,
+    sendAudioCommit,
+    sendResponseCreate,
+    disconnect,
+  } as const;
 }
