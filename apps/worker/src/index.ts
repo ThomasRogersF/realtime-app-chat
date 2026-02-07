@@ -4,6 +4,9 @@ export interface Env {
   REALTIME_SESSION: DurableObjectNamespace;
   ALLOW_ANY_ORIGIN: string;
   ALLOWED_ORIGINS: string;
+  OPENAI_API_KEY: string;
+  OPENAI_MODEL: string;
+  OPENAI_LOG_EVENTS: string;
 }
 
 export default {

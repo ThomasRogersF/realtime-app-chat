@@ -22,3 +22,5 @@ new_classes = ["RealtimeSession"]
 [vars]
 ALLOW_ANY_ORIGIN = "true"
 ALLOWED_ORIGINS = ""
+OPENAI_MODEL = "gpt-realtime-mini-2025-12-15"
+OPENAI_LOG_EVENTS = "true"
