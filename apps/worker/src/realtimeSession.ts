@@ -15,12 +15,21 @@ interface ToolResultEntry {
   at: string; // ISO timestamp
 }
 
+/** Phase 9A: Session stats counters */
+interface SessionStats {
+  audioChunksIn: number;
+  audioChunksOut: number;
+  toolCalls: number;
+  responsesCreated: number;
+}
+
 const registry = new LocalScenarioRegistry();
 
 /**
  * Durable Object that manages a single realtime session.
  * Phase 3-7: WebSocket relay between client and OpenAI Realtime API.
  * Phase 8: Persists tool results, supports end-call flow, exposes summary.
+ * Phase 9A: Guardrails (max duration, max responses) and session stats.
  */
 export class RealtimeSession implements DurableObject {
   private state: DurableObjectState;
@@ -42,6 +51,19 @@ export class RealtimeSession implements DurableObject {
   private startedAt: string | null = null;
   private endedAt: string | null = null;
 
+  /** Phase 9A: Guardrails */
+  private terminationReason: string | null = null;
+  private guardrailTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Phase 9A: Session stats */
+  private stats: SessionStats = {
+    audioChunksIn: 0,
+    audioChunksOut: 0,
+    toolCalls: 0,
+    responsesCreated: 0,
+  };
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
+
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
@@ -54,6 +76,13 @@ export class RealtimeSession implements DurableObject {
         (await this.state.storage.get<string>("startedAt")) ?? null;
       this.endedAt =
         (await this.state.storage.get<string>("endedAt")) ?? null;
+      this.terminationReason =
+        (await this.state.storage.get<string>("terminationReason")) ?? null;
+      const storedStats =
+        await this.state.storage.get<SessionStats>("stats");
+      if (storedStats) {
+        this.stats = storedStats;
+      }
       const storedScenarioId =
         (await this.state.storage.get<string>("scenarioId")) ?? null;
       if (storedScenarioId) {
@@ -94,6 +123,11 @@ export class RealtimeSession implements DurableObject {
     server.accept();
     this.clientWs = server;
 
+    // Phase 9A: Start guardrail timer
+    this.startGuardrailTimer();
+    // Phase 9A: Start stats broadcast timer (dev-only)
+    this.startStatsBroadcast();
+
     server.addEventListener("message", (event) => {
       this.handleMessage(server, event);
     });
@@ -107,6 +141,93 @@ export class RealtimeSession implements DurableObject {
     });
 
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // ── Phase 9A: Guardrail timer ────────────────────────────────
+  private startGuardrailTimer(): void {
+    const maxSeconds = parseInt(this.env.MAX_SESSION_SECONDS || "600", 10);
+    // Check every 5 seconds
+    this.guardrailTimer = setInterval(() => {
+      if (!this.startedAt) return;
+      const elapsed = (Date.now() - new Date(this.startedAt).getTime()) / 1000;
+      if (elapsed > maxSeconds) {
+        this.terminateSession("time_limit", "Session time limit reached");
+      }
+    }, 5000);
+  }
+
+  // ── Phase 9A: Stats broadcast (dev-only, every 15s) ─────────
+  private startStatsBroadcast(): void {
+    if (this.env.OPENAI_LOG_EVENTS !== "true") return;
+    this.statsTimer = setInterval(() => {
+      if (this.clientWs) {
+        this.sendJson(this.clientWs, {
+          type: "server.stats",
+          ...this.stats,
+          elapsedSeconds: this.startedAt
+            ? Math.floor((Date.now() - new Date(this.startedAt).getTime()) / 1000)
+            : 0,
+        });
+      }
+    }, 15000);
+  }
+
+  // ── Phase 9A: Check response limit ───────────────────────────
+  private checkResponseLimit(): void {
+    const maxResponses = parseInt(this.env.MAX_RESPONSES || "60", 10);
+    if (this.stats.responsesCreated > maxResponses) {
+      this.terminateSession("response_limit", "Response limit reached");
+    }
+  }
+
+  // ── Phase 9A: Graceful session termination ───────────────────
+  private async terminateSession(
+    reason: string,
+    message: string,
+  ): Promise<void> {
+    // Prevent double-termination
+    if (this.terminationReason) return;
+    this.terminationReason = reason;
+
+    // Persist termination
+    this.endedAt = new Date().toISOString();
+    await this.state.storage.put("endedAt", this.endedAt);
+    await this.state.storage.put("terminationReason", reason);
+    await this.state.storage.put("stats", this.stats);
+
+    // Notify client
+    if (this.clientWs) {
+      this.sendJson(this.clientWs, {
+        type: "server.error",
+        error: message,
+      });
+      this.sendJson(this.clientWs, {
+        type: "server.call_ended",
+        reason,
+      });
+    }
+
+    // Close OpenAI WS
+    if (this.openaiWs) {
+      try {
+        this.openaiWs.close(1000, reason);
+      } catch {
+        // Already closed
+      }
+      this.openaiWs = null;
+    }
+
+    // Close client WS
+    if (this.clientWs) {
+      try {
+        this.clientWs.close(1000, reason);
+      } catch {
+        // Already closed
+      }
+      this.clientWs = null;
+    }
+
+    this.clearTimers();
   }
 
   // ── Client message handler ────────────────────────────────────
@@ -181,6 +302,8 @@ export class RealtimeSession implements DurableObject {
           });
           break;
         }
+        // Phase 9A: Track audio in
+        this.stats.audioChunksIn++;
         this.forwardToOpenAI({
           type: "input_audio_buffer.append",
           audio: msg.audio,
@@ -194,6 +317,9 @@ export class RealtimeSession implements DurableObject {
       }
 
       case "client.response.create": {
+        // Phase 9A: Track response creation
+        this.stats.responsesCreated++;
+        this.checkResponseLimit();
         this.forwardToOpenAI({ type: "response.create" });
         break;
       }
@@ -387,12 +513,16 @@ export class RealtimeSession implements DurableObject {
       }
 
       // ── Response lifecycle ────────────────────────────────────
-      case "response.created":
-      case "response.done":
+      case "response.created": {
         // Reset accumulator on new response
-        if (msg.type === "response.created") {
-          this.pendingResponseText = "";
-        }
+        this.pendingResponseText = "";
+        // Phase 9A: Count responses from OpenAI (server-initiated responses)
+        this.stats.responsesCreated++;
+        this.checkResponseLimit();
+        break;
+      }
+
+      case "response.done":
         break;
 
       // ── Error handling ────────────────────────────────────────
@@ -415,6 +545,8 @@ export class RealtimeSession implements DurableObject {
       case "response.audio.delta": {
         const delta = typeof msg.delta === "string" ? msg.delta : "";
         if (this.clientWs && delta) {
+          // Phase 9A: Track audio out
+          this.stats.audioChunksOut++;
           this.sendJson(this.clientWs, {
             type: "server.audio.delta",
             delta,
@@ -569,6 +701,9 @@ export class RealtimeSession implements DurableObject {
       args = {};
     }
 
+    // Phase 9A: Track tool calls
+    this.stats.toolCalls++;
+
     // 1) Execute the tool handler
     const result = await runTool(name, args, {
       scenarioId: this.session.scenarioId ?? undefined,
@@ -661,9 +796,10 @@ export class RealtimeSession implements DurableObject {
       await this.state.storage.put("toolResults", this.toolResults);
     }
 
-    // Persist endedAt
+    // Persist endedAt and stats
     this.endedAt = new Date().toISOString();
     await this.state.storage.put("endedAt", this.endedAt);
+    await this.state.storage.put("stats", this.stats);
 
     // Close OpenAI WS cleanly
     if (this.openaiWs) {
@@ -677,6 +813,8 @@ export class RealtimeSession implements DurableObject {
 
     // Tell client the call has ended
     this.sendJson(ws, { type: "server.call_ended" });
+
+    this.clearTimers();
   }
 
   // ── Phase 8: Summary endpoint handler ──────────────────────
@@ -686,6 +824,9 @@ export class RealtimeSession implements DurableObject {
       scenarioId: this.session.scenarioId,
       startedAt: this.startedAt,
       endedAt: this.endedAt,
+      // Phase 9A: Include termination reason and stats
+      terminationReason: this.terminationReason,
+      stats: this.stats,
       toolResults: this.toolResults,
     };
     return new Response(JSON.stringify(body), {
@@ -710,6 +851,20 @@ export class RealtimeSession implements DurableObject {
         // Already closed
       }
       this.openaiWs = null;
+    }
+
+    this.clearTimers();
+  }
+
+  /** Phase 9A: Clear all interval timers */
+  private clearTimers(): void {
+    if (this.guardrailTimer) {
+      clearInterval(this.guardrailTimer);
+      this.guardrailTimer = null;
+    }
+    if (this.statsTimer) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = null;
     }
   }
 
