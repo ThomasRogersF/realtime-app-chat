@@ -3,6 +3,10 @@ export type {
   Scenario,
   ScenarioSummary,
   ScenarioRegistry,
+  VocabEntry,
+  GradingCriterion,
+  GradingRubric,
+  AutoQuizConfig,
 } from "./types/scenario.js";
 
 export { safeParseJson } from "./utils/safeParseJson.js";

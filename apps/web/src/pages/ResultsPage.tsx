@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 
 const REALTIME_URL =
@@ -10,12 +10,78 @@ interface ToolResultEntry {
   at: string;
 }
 
+interface CriteriaScore {
+  name: string;
+  score: number;
+  notes: string;
+}
+
+interface GradeResult {
+  ok?: boolean;
+  score?: number;
+  criteria_scores?: CriteriaScore[];
+  missed_targets?: string[];
+  summary?: string;
+  tips?: string[];
+}
+
+interface QuizQuestion {
+  question: string;
+  options: string[];
+  answer: string;
+}
+
+interface QuizData {
+  title?: string;
+  questions?: QuizQuestion[];
+}
+
+interface QuizResult {
+  ok?: boolean;
+  quiz?: QuizData;
+}
+
+interface SessionProgress {
+  completed: boolean;
+  completionScore: number | null;
+  completedAt: string | null;
+}
+
 interface SessionSummary {
   sessionKey: string | null;
   scenarioId: string | null;
   startedAt: string | null;
   endedAt: string | null;
   toolResults: ToolResultEntry[];
+  transcriptExcerpt?: { role: string; text: string; at: string }[];
+  progress?: SessionProgress;
+  grade?: GradeResult | null;
+  quiz?: QuizResult | null;
+}
+
+function criterionLabel(name: string): string {
+  switch (name) {
+    case "pronunciation_fluency":
+      return "Pronunciation & Fluency";
+    case "accuracy":
+      return "Accuracy";
+    case "confidence":
+      return "Confidence";
+    default:
+      return name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+}
+
+function scoreColor(score: number): string {
+  if (score >= 90) return "text-green-400";
+  if (score >= 75) return "text-amber-400";
+  return "text-red-400";
+}
+
+function scoreBgColor(score: number): string {
+  if (score >= 90) return "bg-green-500";
+  if (score >= 75) return "bg-amber-500";
+  return "bg-red-500";
 }
 
 export function ResultsPage() {
@@ -24,6 +90,10 @@ export function ResultsPage() {
   const [summary, setSummary] = useState<SessionSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Quiz interactive state
+  const [quizAnswers, setQuizAnswers] = useState<Record<number, string>>({});
+  const [quizSubmitted, setQuizSubmitted] = useState(false);
 
   useEffect(() => {
     if (!sessionKey) {
@@ -45,6 +115,18 @@ export function ResultsPage() {
       )
       .finally(() => setLoading(false));
   }, [sessionKey]);
+
+  const selectAnswer = useCallback(
+    (questionIdx: number, option: string) => {
+      if (quizSubmitted) return;
+      setQuizAnswers((prev) => ({ ...prev, [questionIdx]: option }));
+    },
+    [quizSubmitted],
+  );
+
+  const handleQuizSubmit = useCallback(() => {
+    setQuizSubmitted(true);
+  }, []);
 
   if (loading) {
     return (
@@ -68,23 +150,32 @@ export function ResultsPage() {
     );
   }
 
-  // Find latest grade_lesson result
-  const gradeEntry = [...summary.toolResults]
-    .reverse()
-    .find((tr) => tr.name === "grade_lesson");
-  const grade = gradeEntry?.result as
-    | { score?: number; summary?: string; tips?: string[] }
-    | undefined;
+  // Phase 9B: Use top-level grade/quiz fields (fall back to toolResults)
+  const grade: GradeResult | undefined =
+    (summary.grade as GradeResult) ??
+    ([...summary.toolResults]
+      .reverse()
+      .find((tr) => tr.name === "grade_lesson")?.result as
+      | GradeResult
+      | undefined);
 
-  // Find latest trigger_quiz result
-  const quizEntry = [...summary.toolResults]
-    .reverse()
-    .find((tr) => tr.name === "trigger_quiz");
-  const quiz = (quizEntry?.result as { quiz?: { title?: string; questions?: Array<{
-    question: string;
-    options: string[];
-    answer: string;
-  }> } } | undefined)?.quiz;
+  const quizResult: QuizResult | undefined =
+    (summary.quiz as QuizResult) ??
+    ([...summary.toolResults]
+      .reverse()
+      .find((tr) => tr.name === "trigger_quiz")?.result as
+      | QuizResult
+      | undefined);
+  const quiz = quizResult?.quiz;
+
+  // Quiz scoring
+  const quizQuestions = quiz?.questions ?? [];
+  const quizScore = quizSubmitted
+    ? quizQuestions.reduce(
+        (acc, q, i) => acc + (quizAnswers[i] === q.answer ? 1 : 0),
+        0,
+      )
+    : null;
 
   return (
     <div className="flex min-h-screen flex-col bg-gray-950 text-gray-100">
@@ -102,6 +193,12 @@ export function ResultsPage() {
             {new Date(summary.endedAt).toLocaleTimeString()}
           </p>
         )}
+        {/* Phase 9B: Progress badge */}
+        {summary.progress?.completed && (
+          <span className="mt-1 inline-block rounded-full bg-green-900/50 px-2 py-0.5 text-xs text-green-400">
+            Completed
+          </span>
+        )}
       </header>
 
       <main className="mx-auto w-full max-w-2xl flex-1 space-y-6 px-6 py-8">
@@ -116,13 +213,7 @@ export function ResultsPage() {
             {typeof grade.score === "number" && (
               <div className="mb-4 flex items-baseline gap-3">
                 <span
-                  className={`text-4xl font-bold ${
-                    grade.score >= 90
-                      ? "text-green-400"
-                      : grade.score >= 75
-                        ? "text-amber-400"
-                        : "text-red-400"
-                  }`}
+                  className={`text-4xl font-bold ${scoreColor(grade.score)}`}
                 >
                   {grade.score}
                 </span>
@@ -133,6 +224,63 @@ export function ResultsPage() {
             {/* Summary */}
             {grade.summary && (
               <p className="mb-4 text-sm text-gray-300">{grade.summary}</p>
+            )}
+
+            {/* Phase 9B: Criteria Breakdown */}
+            {grade.criteria_scores && grade.criteria_scores.length > 0 && (
+              <div className="mb-4">
+                <h3 className="mb-3 text-xs font-medium uppercase tracking-wider text-teal-400">
+                  Criteria Breakdown
+                </h3>
+                <div className="space-y-3">
+                  {grade.criteria_scores.map((cs) => (
+                    <div
+                      key={cs.name}
+                      className="rounded-lg border border-gray-800 bg-gray-900/50 p-3"
+                    >
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className="text-sm font-medium text-gray-200">
+                          {criterionLabel(cs.name)}
+                        </span>
+                        <span
+                          className={`text-sm font-bold ${scoreColor(cs.score)}`}
+                        >
+                          {cs.score}
+                        </span>
+                      </div>
+                      {/* Score bar */}
+                      <div className="mb-1 h-1.5 w-full rounded-full bg-gray-800">
+                        <div
+                          className={`h-1.5 rounded-full ${scoreBgColor(cs.score)}`}
+                          style={{ width: `${cs.score}%` }}
+                        />
+                      </div>
+                      {cs.notes && (
+                        <p className="text-xs text-gray-500">{cs.notes}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Missed targets */}
+            {grade.missed_targets && grade.missed_targets.length > 0 && (
+              <div className="mb-4">
+                <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-teal-400">
+                  Missed Phrases
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {grade.missed_targets.map((t) => (
+                    <span
+                      key={t}
+                      className="rounded-full border border-amber-800/50 bg-amber-950/30 px-2 py-0.5 text-xs text-amber-400"
+                    >
+                      {t}
+                    </span>
+                  ))}
+                </div>
+              </div>
             )}
 
             {/* Tips */}
@@ -157,35 +305,92 @@ export function ResultsPage() {
           </section>
         )}
 
-        {/* Quiz Section */}
-        {quiz && quiz.questions && quiz.questions.length > 0 && (
+        {/* Quiz Section — Phase 9B interactive */}
+        {quiz && quizQuestions.length > 0 && (
           <section className="rounded-xl border border-indigo-800/50 bg-indigo-950/30 p-6">
             <h2 className="mb-4 text-base font-semibold text-indigo-300">
               {quiz.title ?? "Quiz"}
             </h2>
+
+            {/* Quiz score after submit */}
+            {quizSubmitted && quizScore !== null && (
+              <div className="mb-4 rounded-lg border border-indigo-700/50 bg-indigo-900/30 p-3 text-center">
+                <span
+                  className={`text-2xl font-bold ${scoreColor(Math.round((quizScore / quizQuestions.length) * 100))}`}
+                >
+                  {quizScore} / {quizQuestions.length}
+                </span>
+                <p className="mt-1 text-xs text-gray-400">
+                  {quizScore === quizQuestions.length
+                    ? "Perfect score!"
+                    : quizScore >= quizQuestions.length / 2
+                      ? "Good effort — review the highlighted answers."
+                      : "Keep studying — you'll improve!"}
+                </p>
+              </div>
+            )}
+
             <ol className="space-y-4">
-              {quiz.questions.map((q, i) => (
-                <li key={i}>
-                  <p className="mb-2 text-sm font-medium text-gray-200">
-                    {i + 1}. {q.question}
-                  </p>
-                  <div className="grid grid-cols-2 gap-2">
-                    {q.options.map((opt) => (
-                      <div
-                        key={opt}
-                        className={`rounded-lg border px-3 py-1.5 text-sm ${
-                          opt === q.answer
-                            ? "border-green-600 bg-green-950/40 text-green-300"
-                            : "border-gray-700 text-gray-500"
-                        }`}
-                      >
-                        {opt}
-                      </div>
-                    ))}
-                  </div>
-                </li>
-              ))}
+              {quizQuestions.map((q, i) => {
+                const selected = quizAnswers[i];
+                const isCorrect = selected === q.answer;
+
+                return (
+                  <li key={i}>
+                    <p className="mb-2 text-sm font-medium text-gray-200">
+                      {i + 1}. {q.question}
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {q.options.map((opt) => {
+                        let classes =
+                          "rounded-lg border px-3 py-1.5 text-sm cursor-pointer transition ";
+                        if (quizSubmitted) {
+                          if (opt === q.answer) {
+                            classes +=
+                              "border-green-600 bg-green-950/40 text-green-300";
+                          } else if (opt === selected && !isCorrect) {
+                            classes +=
+                              "border-red-600 bg-red-950/40 text-red-300";
+                          } else {
+                            classes += "border-gray-700 text-gray-500";
+                          }
+                        } else if (opt === selected) {
+                          classes +=
+                            "border-indigo-500 bg-indigo-900/40 text-indigo-200";
+                        } else {
+                          classes +=
+                            "border-gray-700 text-gray-400 hover:border-gray-600 hover:text-gray-300";
+                        }
+
+                        return (
+                          <button
+                            key={opt}
+                            type="button"
+                            className={classes}
+                            onClick={() => selectAnswer(i, opt)}
+                            disabled={quizSubmitted}
+                          >
+                            {opt}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </li>
+                );
+              })}
             </ol>
+
+            {/* Submit button */}
+            {!quizSubmitted && (
+              <button
+                type="button"
+                onClick={handleQuizSubmit}
+                disabled={Object.keys(quizAnswers).length < quizQuestions.length}
+                className="mt-4 w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Submit Quiz
+              </button>
+            )}
           </section>
         )}
 
