@@ -41,12 +41,14 @@ export function CallPage() {
   const {
     status,
     events,
+    sessionKey,
     connect,
     send,
     sendAudioAppend,
     sendAudioCommit,
     sendResponseCreate,
     sendResponseCancel,
+    endCall,
     disconnect,
   } = useRealtimeTransport();
 
@@ -179,8 +181,20 @@ export function CallPage() {
         );
         break;
       }
+
+      // ── Phase 8: Call ended — navigate to results ──────────
+      case "server.call_ended": {
+        mic.stop();
+        disconnect();
+        if (sessionKey) {
+          navigate(`/results/${sessionKey}`);
+        } else {
+          navigate("/");
+        }
+        break;
+      }
     }
-  }, [sendResponseCancel]);
+  }, [sendResponseCancel, sessionKey, navigate, mic, disconnect]);
 
   // Watch events array for new server events
   const lastProcessedRef = useRef(0);
@@ -457,16 +471,16 @@ export function CallPage() {
             {micLabel}
           </span>
 
-          {/* Disconnect button when connected (since big button is now PTT) */}
+          {/* End Call button when connected (since big button is now PTT) */}
           {status === "connected" && (
             <button
               onClick={() => {
                 mic.stop();
-                disconnect();
+                endCall();
               }}
-              className="mt-1 rounded bg-gray-800 px-3 py-1 text-xs text-gray-400 transition hover:bg-gray-700"
+              className="mt-1 rounded bg-red-900/60 px-3 py-1 text-xs text-red-300 transition hover:bg-red-800/60"
             >
-              Disconnect
+              End Call
             </button>
           )}
         </div>

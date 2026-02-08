@@ -15,6 +15,8 @@ const REALTIME_URL =
 export function useRealtimeTransport() {
   const [status, setStatus] = useState<TransportStatus>("disconnected");
   const [events, setEvents] = useState<RealtimeEvent[]>([]);
+  /** Phase 8: Expose the session key for the results page */
+  const [sessionKey, setSessionKey] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   const appendEvent = useCallback((evt: RealtimeEvent) => {
@@ -29,6 +31,7 @@ export function useRealtimeTransport() {
       setEvents([]);
 
       const sessionId = crypto.randomUUID();
+      setSessionKey(sessionId);
       const wsUrl = REALTIME_URL.replace(/^http/, "ws");
       const ws = new WebSocket(
         `${wsUrl}/realtime?session=${sessionId}&scenarioId=${encodeURIComponent(scenarioId)}`,
@@ -115,6 +118,15 @@ export function useRealtimeTransport() {
     appendEvent(msg);
   }, [appendEvent]);
 
+  /** Phase 8: Send end_call and let the server respond with call_ended */
+  const endCall = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const msg = { type: "client.end_call" };
+    ws.send(JSON.stringify(msg));
+    appendEvent(msg);
+  }, [appendEvent]);
+
   const disconnect = useCallback(() => {
     const ws = wsRef.current;
     if (ws) {
@@ -122,17 +134,20 @@ export function useRealtimeTransport() {
       wsRef.current = null;
     }
     setStatus("disconnected");
+    setSessionKey(null);
   }, []);
 
   return {
     status,
     events,
+    sessionKey,
     connect,
     send,
     sendAudioAppend,
     sendAudioCommit,
     sendResponseCreate,
     sendResponseCancel,
+    endCall,
     disconnect,
   } as const;
 }

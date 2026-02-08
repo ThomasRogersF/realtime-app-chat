@@ -8,13 +8,19 @@ interface SessionState {
   scenarioId: string | null;
 }
 
+/** Shape of each persisted tool result entry */
+interface ToolResultEntry {
+  name: string;
+  result: Record<string, unknown>;
+  at: string; // ISO timestamp
+}
+
 const registry = new LocalScenarioRegistry();
 
 /**
  * Durable Object that manages a single realtime session.
- * Phase 3: Opens a second WebSocket to OpenAI Realtime API and relays TEXT events.
- * Phase 4: Forwards PCM16 audio from client mic to OpenAI input_audio_buffer.
- * Phase 5: Enables audio output and relays AI audio deltas to client for playback.
+ * Phase 3-7: WebSocket relay between client and OpenAI Realtime API.
+ * Phase 8: Persists tool results, supports end-call flow, exposes summary.
  */
 export class RealtimeSession implements DurableObject {
   private state: DurableObjectState;
@@ -30,12 +36,40 @@ export class RealtimeSession implements DurableObject {
   /** Phase 7: Tracks call_ids already dispatched to avoid duplicate execution */
   private pendingToolCalls = new Set<string>();
 
+  /** Phase 8: In-memory mirror of persisted tool results */
+  private toolResults: ToolResultEntry[] = [];
+  /** Phase 8: Session timing */
+  private startedAt: string | null = null;
+  private endedAt: string | null = null;
+
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
+
+    // Hydrate in-memory state from storage on construction
+    this.state.blockConcurrencyWhile(async () => {
+      this.toolResults =
+        (await this.state.storage.get<ToolResultEntry[]>("toolResults")) ?? [];
+      this.startedAt =
+        (await this.state.storage.get<string>("startedAt")) ?? null;
+      this.endedAt =
+        (await this.state.storage.get<string>("endedAt")) ?? null;
+      const storedScenarioId =
+        (await this.state.storage.get<string>("scenarioId")) ?? null;
+      if (storedScenarioId) {
+        this.session.scenarioId = storedScenarioId;
+      }
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    // ── Phase 8: Internal summary endpoint (non-WebSocket) ───
+    if (url.pathname === "/internal/summary") {
+      return this.handleSummaryRequest();
+    }
+
     // ── Origin check ──────────────────────────────────────────
     if (!this.isOriginAllowed(request)) {
       return new Response("Forbidden", { status: 403 });
@@ -45,11 +79,17 @@ export class RealtimeSession implements DurableObject {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
 
-    const url = new URL(request.url);
     const sessionKey = url.searchParams.get("session") ?? crypto.randomUUID();
     const scenarioId = url.searchParams.get("scenarioId") ?? null;
 
     this.session = { sessionId: sessionKey, scenarioId };
+
+    // Phase 8: Persist session metadata at start
+    this.startedAt = new Date().toISOString();
+    if (scenarioId) {
+      await this.state.storage.put("scenarioId", scenarioId);
+    }
+    await this.state.storage.put("startedAt", this.startedAt);
 
     server.accept();
     this.clientWs = server;
@@ -161,6 +201,12 @@ export class RealtimeSession implements DurableObject {
       // ── Phase 6: Barge-in — cancel in-flight response ─────
       case "client.response.cancel": {
         this.forwardToOpenAI({ type: "response.cancel" });
+        break;
+      }
+
+      // ── Phase 8: End call ──────────────────────────────────
+      case "client.end_call": {
+        this.handleEndCall(ws);
         break;
       }
 
@@ -546,7 +592,16 @@ export class RealtimeSession implements DurableObject {
     // 3) Always trigger response.create so the model continues speaking
     this.forwardToOpenAI({ type: "response.create" });
 
-    // 4) Forward tool result to client as a non-audio event
+    // 4) Phase 8: Persist tool result in DO storage
+    const entry: ToolResultEntry = {
+      name,
+      result,
+      at: new Date().toISOString(),
+    };
+    this.toolResults.push(entry);
+    await this.state.storage.put("toolResults", this.toolResults);
+
+    // 5) Forward tool result to client as a non-audio event
     if (this.clientWs) {
       this.sendJson(this.clientWs, {
         type: "server.tool_result",
@@ -584,9 +639,66 @@ export class RealtimeSession implements DurableObject {
     }
   }
 
+  // ── Phase 8: End call ───────────────────────────────────────
+  private async handleEndCall(ws: WebSocket): Promise<void> {
+    // Auto-grade if no grade_lesson result exists yet
+    const hasGrade = this.toolResults.some((tr) => tr.name === "grade_lesson");
+    if (!hasGrade) {
+      const result = await runTool(
+        "grade_lesson",
+        { topic: this.session.scenarioId ?? "general conversation" },
+        {
+          scenarioId: this.session.scenarioId ?? undefined,
+          sessionId: this.session.sessionId,
+        },
+      );
+      const entry: ToolResultEntry = {
+        name: "grade_lesson",
+        result,
+        at: new Date().toISOString(),
+      };
+      this.toolResults.push(entry);
+      await this.state.storage.put("toolResults", this.toolResults);
+    }
+
+    // Persist endedAt
+    this.endedAt = new Date().toISOString();
+    await this.state.storage.put("endedAt", this.endedAt);
+
+    // Close OpenAI WS cleanly
+    if (this.openaiWs) {
+      try {
+        this.openaiWs.close(1000, "call_ended");
+      } catch {
+        // Already closed
+      }
+      this.openaiWs = null;
+    }
+
+    // Tell client the call has ended
+    this.sendJson(ws, { type: "server.call_ended" });
+  }
+
+  // ── Phase 8: Summary endpoint handler ──────────────────────
+  private handleSummaryRequest(): Response {
+    const body = {
+      sessionKey: this.session.sessionId || null,
+      scenarioId: this.session.scenarioId,
+      startedAt: this.startedAt,
+      endedAt: this.endedAt,
+      toolResults: this.toolResults,
+    };
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      },
+    });
+  }
+
   // ── Cleanup ───────────────────────────────────────────────────
   private cleanup(): void {
-    this.session = { sessionId: "", scenarioId: null };
     this.clientWs = null;
     this.pendingResponseText = "";
     this.pendingToolCalls.clear();
