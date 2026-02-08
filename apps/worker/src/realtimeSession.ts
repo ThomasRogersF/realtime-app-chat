@@ -1,7 +1,7 @@
 import type { Env } from "./index";
 import { LocalScenarioRegistry } from "@shared";
 import type { Scenario } from "@shared";
-import { runTool } from "./tools/toolRunner";
+import { runTool, type ToolContext } from "./tools/toolRunner";
 
 interface SessionState {
   sessionId: string;
@@ -15,6 +15,20 @@ interface ToolResultEntry {
   at: string; // ISO timestamp
 }
 
+/** Phase 9B: Transcript excerpt entry */
+interface TranscriptEntry {
+  role: "user" | "ai";
+  text: string;
+  at: string;
+}
+
+/** Phase 9B: Progress tracking */
+interface SessionProgress {
+  completed: boolean;
+  completionScore: number | null;
+  completedAt: string | null;
+}
+
 /** Phase 9A: Session stats counters */
 interface SessionStats {
   audioChunksIn: number;
@@ -22,6 +36,8 @@ interface SessionStats {
   toolCalls: number;
   responsesCreated: number;
 }
+
+const MAX_TRANSCRIPT_ENTRIES = 30;
 
 const registry = new LocalScenarioRegistry();
 
@@ -64,6 +80,17 @@ export class RealtimeSession implements DurableObject {
   };
   private statsTimer: ReturnType<typeof setInterval> | null = null;
 
+  /** Phase 9B: In-memory transcript excerpt (last N entries) */
+  private transcript: TranscriptEntry[] = [];
+  /** Phase 9B: Progress tracking */
+  private progress: SessionProgress = {
+    completed: false,
+    completionScore: null,
+    completedAt: null,
+  };
+  /** Phase 9B: Loaded scenario (cached after first load) */
+  private loadedScenario: Scenario | null = null;
+
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
@@ -87,6 +114,14 @@ export class RealtimeSession implements DurableObject {
         (await this.state.storage.get<string>("scenarioId")) ?? null;
       if (storedScenarioId) {
         this.session.scenarioId = storedScenarioId;
+      }
+      // Phase 9B: Hydrate transcript and progress
+      this.transcript =
+        (await this.state.storage.get<TranscriptEntry[]>("transcript")) ?? [];
+      const storedProgress =
+        await this.state.storage.get<SessionProgress>("progress");
+      if (storedProgress) {
+        this.progress = storedProgress;
       }
     });
   }
@@ -349,11 +384,12 @@ export class RealtimeSession implements DurableObject {
     clientWs: WebSocket,
     scenarioId: string | null,
   ): Promise<void> {
-    // Load scenario
+    // Load scenario (and cache for later use in grading)
     let scenario: Scenario | null = null;
     if (scenarioId) {
       try {
         scenario = await registry.getScenarioById(scenarioId);
+        this.loadedScenario = scenario;
       } catch {
         this.sendJson(clientWs, {
           type: "server.error",
@@ -508,6 +544,10 @@ export class RealtimeSession implements DurableObject {
             text: fullText,
           });
         }
+        // Phase 9B: Track AI text in transcript excerpt
+        if (fullText) {
+          this.appendTranscript("ai", fullText);
+        }
         this.pendingResponseText = "";
         break;
       }
@@ -572,6 +612,10 @@ export class RealtimeSession implements DurableObject {
             role: "user",
             text: transcript,
           });
+        }
+        // Phase 9B: Track user speech in transcript excerpt
+        if (transcript) {
+          this.appendTranscript("user", transcript);
         }
         break;
       }
@@ -704,11 +748,8 @@ export class RealtimeSession implements DurableObject {
     // Phase 9A: Track tool calls
     this.stats.toolCalls++;
 
-    // 1) Execute the tool handler
-    const result = await runTool(name, args, {
-      scenarioId: this.session.scenarioId ?? undefined,
-      sessionId: this.session.sessionId,
-    });
+    // 1) Execute the tool handler (Phase 9B: enriched context)
+    const result = await runTool(name, args, this.buildToolContext());
 
     // 2) Send function_call_output back to OpenAI
     const outputItem: Record<string, unknown> = {
@@ -774,18 +815,19 @@ export class RealtimeSession implements DurableObject {
     }
   }
 
-  // ── Phase 8: End call ───────────────────────────────────────
+  // ── Phase 8 + 9B: End call ──────────────────────────────────
   private async handleEndCall(ws: WebSocket): Promise<void> {
+    // Phase 9B: Ensure scenario is loaded for rubric/auto_quiz access
+    await this.ensureScenarioLoaded();
+    const ctx = this.buildToolContext();
+
     // Auto-grade if no grade_lesson result exists yet
     const hasGrade = this.toolResults.some((tr) => tr.name === "grade_lesson");
     if (!hasGrade) {
       const result = await runTool(
         "grade_lesson",
         { topic: this.session.scenarioId ?? "general conversation" },
-        {
-          scenarioId: this.session.scenarioId ?? undefined,
-          sessionId: this.session.sessionId,
-        },
+        ctx,
       );
       const entry: ToolResultEntry = {
         name: "grade_lesson",
@@ -796,10 +838,53 @@ export class RealtimeSession implements DurableObject {
       await this.state.storage.put("toolResults", this.toolResults);
     }
 
+    // Phase 9B: Auto-quiz if scenario says enabled on end_call
+    const autoQuiz = this.loadedScenario?.auto_quiz;
+    if (autoQuiz?.enabled && autoQuiz.when === "end_call") {
+      const hasQuiz = this.toolResults.some(
+        (tr) => tr.name === "trigger_quiz",
+      );
+      if (!hasQuiz) {
+        const quizResult = await runTool(
+          "trigger_quiz",
+          {
+            topic: this.session.scenarioId ?? "vocabulary review",
+            num_questions: autoQuiz.num_questions ?? 3,
+          },
+          ctx,
+        );
+        const quizEntry: ToolResultEntry = {
+          name: "trigger_quiz",
+          result: quizResult,
+          at: new Date().toISOString(),
+        };
+        this.toolResults.push(quizEntry);
+        await this.state.storage.put("toolResults", this.toolResults);
+      }
+    }
+
     // Persist endedAt and stats
     this.endedAt = new Date().toISOString();
     await this.state.storage.put("endedAt", this.endedAt);
     await this.state.storage.put("stats", this.stats);
+
+    // Phase 9B: Persist transcript excerpt
+    await this.persistTranscript();
+
+    // Phase 9B: Persist progress
+    const latestGrade = [...this.toolResults]
+      .reverse()
+      .find((tr) => tr.name === "grade_lesson");
+    const gradeScore =
+      latestGrade && typeof latestGrade.result.score === "number"
+        ? latestGrade.result.score
+        : null;
+    this.progress = {
+      completed: true,
+      completionScore: gradeScore,
+      completedAt: this.endedAt,
+    };
+    await this.state.storage.put("progress", this.progress);
 
     // Close OpenAI WS cleanly
     if (this.openaiWs) {
@@ -817,17 +902,30 @@ export class RealtimeSession implements DurableObject {
     this.clearTimers();
   }
 
-  // ── Phase 8: Summary endpoint handler ──────────────────────
+  // ── Phase 8 + 9B: Summary endpoint handler ─────────────────
   private handleSummaryRequest(): Response {
+    // Phase 9B: Extract latest grade and quiz from toolResults
+    const latestGrade = [...this.toolResults]
+      .reverse()
+      .find((tr) => tr.name === "grade_lesson");
+    const latestQuiz = [...this.toolResults]
+      .reverse()
+      .find((tr) => tr.name === "trigger_quiz");
+
     const body = {
       sessionKey: this.session.sessionId || null,
       scenarioId: this.session.scenarioId,
       startedAt: this.startedAt,
       endedAt: this.endedAt,
-      // Phase 9A: Include termination reason and stats
+      // Phase 9A
       terminationReason: this.terminationReason,
       stats: this.stats,
       toolResults: this.toolResults,
+      // Phase 9B
+      transcriptExcerpt: this.transcript,
+      progress: this.progress,
+      grade: latestGrade?.result ?? null,
+      quiz: latestQuiz?.result ?? null,
     };
     return new Response(JSON.stringify(body), {
       status: 200,
@@ -866,6 +964,44 @@ export class RealtimeSession implements DurableObject {
       clearInterval(this.statsTimer);
       this.statsTimer = null;
     }
+  }
+
+  // ── Phase 9B: Build enriched tool context ────────────────────
+  private buildToolContext(): ToolContext {
+    return {
+      scenarioId: this.session.scenarioId ?? undefined,
+      sessionId: this.session.sessionId,
+      transcript: this.transcript,
+      targetPhrases: this.loadedScenario?.target_phrases,
+      rubric: this.loadedScenario?.grading_rubric,
+    };
+  }
+
+  // ── Phase 9B: Ensure scenario is loaded (for end_call path) ─
+  private async ensureScenarioLoaded(): Promise<void> {
+    if (this.loadedScenario) return;
+    if (!this.session.scenarioId) return;
+    try {
+      this.loadedScenario = await registry.getScenarioById(
+        this.session.scenarioId,
+      );
+    } catch {
+      // Scenario not found — proceed without it
+    }
+  }
+
+  // ── Phase 9B: Transcript helpers ─────────────────────────────
+  private appendTranscript(role: "user" | "ai", text: string): void {
+    if (!text.trim()) return;
+    this.transcript.push({ role, text, at: new Date().toISOString() });
+    // Keep only last N entries
+    if (this.transcript.length > MAX_TRANSCRIPT_ENTRIES) {
+      this.transcript = this.transcript.slice(-MAX_TRANSCRIPT_ENTRIES);
+    }
+  }
+
+  private async persistTranscript(): Promise<void> {
+    await this.state.storage.put("transcript", this.transcript);
   }
 
   // ── Helpers ───────────────────────────────────────────────────

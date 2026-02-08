@@ -4,6 +4,53 @@
   "title": "Ordering Coffee",
   "character": { "name": "María", "role": "Barista at a café in Madrid" },
   "system_prompt": "You are María, a barista at a cozy café in Madrid. Speak simple Spanish at A1 level. Help the student practice ordering coffee and pastries, asking about the menu, and paying. Correct mistakes gently and encourage the student.\n\nYou have access to tools. When the student asks you to grade their performance, evaluate them, or give feedback on the lesson, call the grade_lesson tool. When the student asks for a quiz or to test their knowledge, call the trigger_quiz tool. Do NOT mention tool internals to the student — just use the tool results to inform your spoken response naturally.",
+  "learning_objectives": [
+    "Order drinks and food items at a café using complete sentences",
+    "Ask about the menu and prices using polite question forms",
+    "Complete a payment interaction including understanding totals and saying thank you"
+  ],
+  "target_phrases": [
+    "me gustaría",
+    "por favor",
+    "cuánto cuesta",
+    "la cuenta",
+    "un café con leche",
+    "muchas gracias"
+  ],
+  "vocab": [
+    { "term": "café", "translation": "coffee" },
+    { "term": "leche", "translation": "milk" },
+    { "term": "azúcar", "translation": "sugar" },
+    { "term": "la cuenta", "translation": "the bill" },
+    { "term": "por favor", "translation": "please" },
+    { "term": "gracias", "translation": "thank you" },
+    { "term": "cuánto", "translation": "how much" },
+    { "term": "pastel", "translation": "pastry/cake" }
+  ],
+  "grading_rubric": {
+    "criteria": [
+      {
+        "name": "pronunciation_fluency",
+        "weight": 0.4,
+        "description": "How naturally and fluently the student speaks Spanish, including sentence flow and pronunciation effort"
+      },
+      {
+        "name": "accuracy",
+        "weight": 0.35,
+        "description": "Correct use of vocabulary, grammar, and target phrases appropriate for A1 level"
+      },
+      {
+        "name": "confidence",
+        "weight": 0.25,
+        "description": "Willingness to engage, attempt new phrases, and maintain the conversation without excessive hesitation"
+      }
+    ]
+  },
+  "auto_quiz": {
+    "enabled": true,
+    "when": "end_call",
+    "num_questions": 5
+  },
   "tools": [
     {
       "name": "grade_lesson",

@@ -4,6 +4,27 @@ export interface ToolSchema {
   parameters: Record<string, any>;
 }
 
+export interface VocabEntry {
+  term: string;
+  translation?: string;
+}
+
+export interface GradingCriterion {
+  name: string;
+  weight: number;
+  description: string;
+}
+
+export interface GradingRubric {
+  criteria: GradingCriterion[];
+}
+
+export interface AutoQuizConfig {
+  enabled: boolean;
+  when: "end_call" | "tool_trigger";
+  num_questions?: number;
+}
+
 export interface Scenario {
   id: string;
   level: string;
@@ -12,6 +33,11 @@ export interface Scenario {
   system_prompt: string;
   tools?: ToolSchema[];
   session_overrides?: { voice?: string; temperature?: number };
+  learning_objectives?: string[];
+  target_phrases?: string[];
+  vocab?: VocabEntry[];
+  grading_rubric?: GradingRubric;
+  auto_quiz?: AutoQuizConfig;
 }
 
 export type ScenarioSummary = Pick<Scenario, "id" | "level" | "title">;
