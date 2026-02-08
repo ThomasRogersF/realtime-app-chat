@@ -24,18 +24,46 @@ export function useRealtimeTransport() {
   }, []);
 
   const connect = useCallback(
-    (scenarioId: string) => {
+    async (scenarioId: string) => {
       if (wsRef.current) return;
 
       setStatus("connecting");
       setEvents([]);
 
-      const sessionId = crypto.randomUUID();
+      let sessionId: string;
+      let token: string | null = null;
+
+      // Phase 9A: Try POST /session to get a signed token
+      try {
+        const resp = await fetch(`${REALTIME_URL}/session`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scenarioId }),
+        });
+        if (resp.ok) {
+          const data = (await resp.json()) as {
+            sessionKey: string;
+            token: string;
+            expiresAt: string;
+          };
+          sessionId = data.sessionKey;
+          token = data.token;
+        } else {
+          // Fallback: generate client-side UUID (dev / REQUIRE_AUTH=false)
+          sessionId = crypto.randomUUID();
+        }
+      } catch {
+        // Network error or endpoint not available — fallback
+        sessionId = crypto.randomUUID();
+      }
+
       setSessionKey(sessionId);
       const wsUrl = REALTIME_URL.replace(/^http/, "ws");
-      const ws = new WebSocket(
-        `${wsUrl}/realtime?session=${sessionId}&scenarioId=${encodeURIComponent(scenarioId)}`,
-      );
+      let wsEndpoint = `${wsUrl}/realtime?session=${sessionId}&scenarioId=${encodeURIComponent(scenarioId)}`;
+      if (token) {
+        wsEndpoint += `&token=${encodeURIComponent(token)}`;
+      }
+      const ws = new WebSocket(wsEndpoint);
       wsRef.current = ws;
 
       ws.addEventListener("open", () => {
