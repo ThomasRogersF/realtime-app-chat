@@ -173,6 +173,17 @@ export function CallPage() {
         break;
       }
 
+      // ── Phase 10: Fallback to clear AI speaking after response ends ──
+      case "server.response.done": {
+        setIsAiSpeaking(false);
+        if (aiSpeakingTimerRef.current) {
+          clearTimeout(aiSpeakingTimerRef.current);
+          aiSpeakingTimerRef.current = null;
+        }
+        ignoreAudioUntilRef.current = 0;
+        break;
+      }
+
       // ── Phase 7: Tool results (debug only) ───────────────────
       case "server.tool_result": {
         const name = typeof evt.name === "string" ? evt.name : "unknown";
