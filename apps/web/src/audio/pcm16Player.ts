@@ -21,12 +21,21 @@ export class Pcm16Player {
     this.gain.connect(this.ctx.destination);
   }
 
-  /** Decode a base64-encoded PCM16 chunk and schedule it for playback. */
-  playBase64Pcm16Delta(b64: string): void {
-    // Resume context if suspended (browsers require user gesture)
-    if (this.ctx.state === "suspended") {
-      this.ctx.resume();
+  /**
+   * Phase 10.2: Ensure the AudioContext is in the "running" state.
+   * Browsers suspend contexts until a user gesture; iOS may also
+   * move them to "interrupted".
+   */
+  async ensureRunning(): Promise<void> {
+    if (!this.ctx) return;
+    if (this.ctx.state !== "running") {
+      await this.ctx.resume();
     }
+  }
+
+  /** Decode a base64-encoded PCM16 chunk and schedule it for playback. */
+  async playBase64Pcm16Delta(b64: string): Promise<void> {
+    await this.ensureRunning();
 
     // Decode base64 → binary
     const binary = atob(b64);
@@ -37,6 +46,7 @@ export class Pcm16Player {
 
     // Convert Int16 → Float32
     const int16 = new Int16Array(bytes.buffer);
+    console.log("[player] scheduling", int16.length);
     const float32 = new Float32Array(int16.length);
     for (let i = 0; i < int16.length; i++) {
       float32[i] = int16[i] / 32768;

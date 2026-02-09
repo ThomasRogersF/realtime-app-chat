@@ -18,6 +18,12 @@ export function useRealtimeTransport() {
   /** Phase 8: Expose the session key for the results page */
   const [sessionKey, setSessionKey] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  /**
+   * Phase 10.2: Direct callback ref for server events.
+   * Callers set this to handle events immediately from the WS message
+   * handler, bypassing the capped `events` state array.
+   */
+  const onServerEventRef = useRef<((evt: RealtimeEvent) => void) | null>(null);
 
   const appendEvent = useCallback((evt: RealtimeEvent) => {
     setEvents((prev) => [...prev, evt].slice(-MAX_EVENTS));
@@ -80,6 +86,8 @@ export function useRealtimeTransport() {
         try {
           const data = JSON.parse(event.data as string) as RealtimeEvent;
           appendEvent(data);
+          // Phase 10.2: Deliver directly to avoid sliding-window drops
+          onServerEventRef.current?.(data);
         } catch {
           appendEvent({ type: "parse_error", raw: event.data });
         }
@@ -169,6 +177,8 @@ export function useRealtimeTransport() {
     status,
     events,
     sessionKey,
+    /** Phase 10.2: Set this ref to receive server events directly from the WS handler. */
+    onServerEventRef,
     connect,
     send,
     sendAudioAppend,
