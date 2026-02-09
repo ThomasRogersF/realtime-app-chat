@@ -58,6 +58,8 @@ export class RealtimeSession implements DurableObject {
   private openaiWs: WebSocket | null = null;
   /** Accumulates response.text.delta content for the current response */
   private pendingResponseText = "";
+  /** Accumulates response.audio_transcript.delta content for the current response */
+  private pendingAudioTranscript = "";
   /** Phase 7: Tracks call_ids already dispatched to avoid duplicate execution */
   private pendingToolCalls = new Set<string>();
 
@@ -552,18 +554,58 @@ export class RealtimeSession implements DurableObject {
         break;
       }
 
+      // ── Phase 10: Audio transcript streaming ──────────────────
+      case "response.audio_transcript.delta": {
+        const delta =
+          typeof msg.delta === "string" ? msg.delta : "";
+        this.pendingAudioTranscript += delta;
+        if (this.clientWs) {
+          this.sendJson(this.clientWs, {
+            type: "server.text.delta",
+            role: "ai",
+            delta,
+          });
+        }
+        break;
+      }
+
+      case "response.audio_transcript.done": {
+        const transcript =
+          typeof msg.transcript === "string"
+            ? msg.transcript
+            : this.pendingAudioTranscript;
+        if (this.clientWs) {
+          this.sendJson(this.clientWs, {
+            type: "server.text.completed",
+            role: "ai",
+            text: transcript,
+          });
+        }
+        // Phase 9B: Track AI audio transcript in transcript excerpt
+        if (transcript) {
+          this.appendTranscript("ai", transcript);
+        }
+        this.pendingAudioTranscript = "";
+        break;
+      }
+
       // ── Response lifecycle ────────────────────────────────────
       case "response.created": {
-        // Reset accumulator on new response
+        // Reset accumulators on new response
         this.pendingResponseText = "";
+        this.pendingAudioTranscript = "";
         // Phase 9A: Count responses from OpenAI (server-initiated responses)
         this.stats.responsesCreated++;
         this.checkResponseLimit();
         break;
       }
 
-      case "response.done":
+      case "response.done": {
+        if (this.clientWs) {
+          this.sendJson(this.clientWs, { type: "server.response.done" });
+        }
         break;
+      }
 
       // ── Error handling ────────────────────────────────────────
       case "error": {
@@ -940,6 +982,7 @@ export class RealtimeSession implements DurableObject {
   private cleanup(): void {
     this.clientWs = null;
     this.pendingResponseText = "";
+    this.pendingAudioTranscript = "";
     this.pendingToolCalls.clear();
 
     if (this.openaiWs) {
