@@ -400,7 +400,7 @@ export class RealtimeSession implements DurableObject {
 
     // Build OpenAI WS URL
     const model = this.env.OPENAI_MODEL || "gpt-realtime-mini-2025-12-15";
-    const openaiUrl = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
+    const openaiUrl = `https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
 
     try {
       const resp = await fetch(openaiUrl, {
