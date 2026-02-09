@@ -42,6 +42,7 @@ export function CallPage() {
     status,
     events,
     sessionKey,
+    onServerEventRef,
     connect,
     send,
     sendAudioAppend,
@@ -128,6 +129,7 @@ export function CallPage() {
         }
         const delta = typeof evt.delta === "string" ? evt.delta : "";
         if (delta && playerRef.current) {
+          console.log("[audio.delta]", delta.length);
           playerRef.current.playBase64Pcm16Delta(delta);
           setIsAiSpeaking(true);
           // Clear any pending "done" timer since we got a new delta
@@ -207,22 +209,15 @@ export function CallPage() {
     }
   }, [sendResponseCancel, sessionKey, navigate, mic, disconnect]);
 
-  // Watch events array for new server events
-  const lastProcessedRef = useRef(0);
-  useEffect(() => {
-    const newEvents = events.slice(lastProcessedRef.current);
-    lastProcessedRef.current = events.length;
-    for (const evt of newEvents) {
-      handleServerEvent(evt);
-    }
-  }, [events, handleServerEvent]);
+  // Phase 10.2: Deliver server events directly via ref callback
+  // (bypasses the capped events sliding-window array)
+  onServerEventRef.current = handleServerEvent;
 
-  // Reset transcript and processing counter on new connection
+  // Reset transcript on new connection
   useEffect(() => {
     if (status === "connecting") {
       setTranscript([]);
       setToolResults([]);
-      lastProcessedRef.current = 0;
     }
   }, [status]);
 
