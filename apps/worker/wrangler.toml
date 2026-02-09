@@ -10,7 +10,8 @@ bindings = [
 
 [[migrations]]
 tag = "v1"
-new_classes = ["RealtimeSession"]
+new_sqlite_classes = ["RealtimeSession"]
+
 
 # ── Environment variables ────────────────────────────────────
 # ALLOW_ANY_ORIGIN  – "true" to skip origin checks (default in dev)
