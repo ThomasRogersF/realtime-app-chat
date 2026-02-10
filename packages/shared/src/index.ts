@@ -7,6 +7,7 @@ export type {
   GradingCriterion,
   GradingRubric,
   AutoQuizConfig,
+  KickoffConfig,
 } from "./types/scenario.js";
 
 export { safeParseJson } from "./utils/safeParseJson.js";
