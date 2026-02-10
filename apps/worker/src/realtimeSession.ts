@@ -470,6 +470,13 @@ export class RealtimeSession implements DurableObject {
           tools: scenario?.tools ?? [],
           tool_choice: "auto",
           temperature: scenario?.session_overrides?.temperature ?? 0.7,
+          turn_detection: {
+            type: "server_vad",
+            threshold: 0.6,
+            prefix_padding_ms: 500,
+            silence_duration_ms: 700,
+            create_response: false,
+          },
         },
       };
       ws.send(JSON.stringify(sessionUpdate));
