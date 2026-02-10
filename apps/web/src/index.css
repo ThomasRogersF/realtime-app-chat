@@ -1,3 +1,37 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    /* Backgrounds */
+    --bg: #F6F7FB;
+    --surface: #FFFFFF;
+    --text: #1E293B;
+    --muted: #64748B;
+    --border: #E2E8F0;
+
+    /* Brand palette */
+    --primary: #22C55E;
+    --primary-hover: #16A34A;
+    --secondary: #3B82F6;
+    --secondary-hover: #2563EB;
+    --accent: #8B5CF6;
+    --accent-hover: #7C3AED;
+    --danger: #EF4444;
+    --danger-hover: #DC2626;
+    --warning: #F59E0B;
+
+    /* Tints for bubbles / cards */
+    --teal-tint: #F0FDFA;
+    --indigo-tint: #EEF2FF;
+    --green-tint: #F0FDF4;
+    --red-tint: #FEF2F2;
+    --amber-tint: #FFFBEB;
+  }
+
+  body {
+    background-color: var(--bg);
+    color: var(--text);
+  }
+}
