@@ -25,6 +25,13 @@ export interface AutoQuizConfig {
   num_questions?: number;
 }
 
+export interface KickoffConfig {
+  enabled: boolean;
+  max_turns?: number;
+  style?: string;
+  prompt: string;
+}
+
 export interface Scenario {
   id: string;
   level: string;
@@ -38,6 +45,7 @@ export interface Scenario {
   vocab?: VocabEntry[];
   grading_rubric?: GradingRubric;
   auto_quiz?: AutoQuizConfig;
+  kickoff?: KickoffConfig;
 }
 
 export type ScenarioSummary = Pick<Scenario, "id" | "level" | "title">;

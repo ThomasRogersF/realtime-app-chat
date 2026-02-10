@@ -93,6 +93,9 @@ export class RealtimeSession implements DurableObject {
   /** Phase 9B: Loaded scenario (cached after first load) */
   private loadedScenario: Scenario | null = null;
 
+  /** Lesson-first kickoff: ensures response.create is sent at most once per session */
+  private kickoffSent = false;
+
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
@@ -125,6 +128,9 @@ export class RealtimeSession implements DurableObject {
       if (storedProgress) {
         this.progress = storedProgress;
       }
+      // Hydrate kickoff guard so reconnections to the same DO don't re-trigger
+      this.kickoffSent =
+        (await this.state.storage.get<boolean>("kickoffSent")) ?? false;
     });
   }
 
@@ -488,6 +494,22 @@ export class RealtimeSession implements DurableObject {
         scenarioId: this.session.scenarioId,
         openai: true,
       });
+
+      // ── Lesson-first kickoff: AI speaks first ─────────────────
+      // Send response.create exactly once per session so the AI
+      // initiates the conversation immediately without user input.
+      if (scenario?.kickoff?.enabled && !this.kickoffSent) {
+        this.kickoffSent = true;
+        await this.state.storage.put("kickoffSent", true);
+
+        const kickoffEvent: Record<string, unknown> = {
+          type: "response.create",
+          response: {
+            instructions: scenario.kickoff.prompt,
+          },
+        };
+        ws.send(JSON.stringify(kickoffEvent));
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.sendJson(clientWs, {
