@@ -37,6 +37,8 @@ export function CallPage() {
   const aiSpeakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Phase 6: Timestamp until which late audio deltas are dropped after barge-in */
   const ignoreAudioUntilRef = useRef(0);
+  /** PTT guard: true if at least one audio chunk was sent during the current PTT hold */
+  const pttAudioSentRef = useRef(false);
 
   const {
     status,
@@ -54,7 +56,14 @@ export function CallPage() {
   } = useRealtimeTransport();
 
   // ── Mic streaming (Phase 4) ────────────────────────────────
-  const mic = useMicPcmStream(sendAudioAppend);
+  const sendAudioAppendTracked = useCallback(
+    (buffer: ArrayBuffer) => {
+      pttAudioSentRef.current = true;
+      sendAudioAppend(buffer);
+    },
+    [sendAudioAppend],
+  );
+  const mic = useMicPcmStream(sendAudioAppendTracked);
 
   useEffect(() => {
     if (!scenarioId) {
@@ -266,15 +275,18 @@ export function CallPage() {
   // ── Push-to-talk handlers ──────────────────────────────────
   function handlePttDown() {
     if (status !== "connected") return;
+    pttAudioSentRef.current = false;
     mic.start();
   }
 
   function handlePttUp() {
     if (!mic.isCapturing) return;
     mic.stop();
-    // Commit the audio buffer and request a response
-    sendAudioCommit();
-    sendResponseCreate();
+    // Only commit + request response if audio was actually captured
+    if (pttAudioSentRef.current) {
+      sendAudioCommit();
+      sendResponseCreate();
+    }
   }
 
   if (loading) {
